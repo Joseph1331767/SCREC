@@ -1,0 +1,49 @@
+<!doctype html><html><head><meta charset="utf-8"><title>SCREC</title><link rel="stylesheet" href="bar.css"></head>
+<body><div id="app">
+  <div id="bar">
+    <div id="grip" title="Drag">⋮⋮</div>
+    <div id="idle" class="row">
+      <button id="btnImg" class="tool" title="Screenshot"><svg viewBox="0 0 24 24"><path d="M4 7h3l2-2h6l2 2h3v12H4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.5" fill="none" stroke="currentColor" stroke-width="2"/></svg><span>Image</span></button>
+      <button id="btnVid" class="tool rec" title="Record video"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6" fill="currentColor"/></svg><span>Video</span></button>
+      <span class="spacer"></span>
+      <button id="btnSet" class="icon" title="Settings">⚙</button>
+      <button id="btnHide" class="icon" title="Hide to tray">–</button>
+    </div>
+    <div id="recing" class="row hidden">
+      <span id="dot"></span><span id="timer">00:00</span><span id="zmark" class="hidden">🔍 2×</span>
+      <span class="spacer"></span>
+      <button id="btnPause" class="tool">Pause</button>
+      <button id="btnStop" class="tool stop">Stop</button>
+    </div>
+  </div>
+  <div id="msg" class="hidden"></div>
+
+  <div id="panel" class="hidden">
+    <label>Resolution
+      <select id="sRes"><option value="auto">Auto (match selection)</option><option value="720">720p</option><option value="1080">1080p</option><option value="1440">1440p</option><option value="2160">4K</option></select></label>
+    <label>If selection ≠ resolution
+      <select id="sFit"><option value="fit">Scale to fit (bars)</option><option value="stretch">Stretch to fit</option><option value="fill">Fill &amp; crop</option></select></label>
+    <label>Frame rate
+      <select id="sFps"><option value="24">24</option><option value="30">30</option><option value="60">60</option></select></label>
+    <label class="chk"><input type="checkbox" id="cSys"> Device audio</label>
+    <label class="chk"><input type="checkbox" id="cMic"> Microphone</label>
+    <label>Mic device <select id="sMic"></select></label>
+    <label class="chk"><input type="checkbox" id="cZoom"> Zoom: Ctrl+Alt+Shift + hold LMB</label>
+    <label class="chk"><input type="checkbox" id="cStart"> Start with Windows</label>
+    <div class="dirrow"><span id="dir"></span><button id="btnDir" class="small">Change</button></div>
+    <div class="dirrow"><span id="ver"></span><button id="btnUpd" class="small">Check updates</button><button id="btnQuit" class="small danger">Quit</button></div>
+  </div>
+
+  <div id="result" class="hidden">
+    <div id="preview"></div>
+    <div id="rname"></div>
+    <div class="btns">
+      <button id="rMove" class="small primary">Move to…</button>
+      <button id="rOpen" class="small">Show</button>
+      <button id="rCopy" class="small">Copy</button>
+      <button id="rDel" class="small danger">Delete</button>
+      <button id="rDone" class="small">Done</button>
+    </div>
+  </div>
+</div>
+<script src="bar.js"></script></body></html>

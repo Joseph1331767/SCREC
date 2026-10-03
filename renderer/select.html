@@ -1,0 +1,29 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+html,body{margin:0;height:100%;overflow:hidden;cursor:crosshair;user-select:none;background:rgba(0,0,0,.35);font:13px system-ui,sans-serif}
+#box{position:absolute;display:none;border:2px solid #ef4444;box-shadow:0 0 0 99999px rgba(0,0,0,.45);background:transparent}
+#lbl{position:absolute;display:none;background:#111;color:#fff;padding:2px 6px;border-radius:4px;font-size:12px;white-space:nowrap}
+#hint{position:fixed;top:12px;left:50%;transform:translateX(-50%);background:#111;color:#fff;padding:6px 12px;border-radius:8px;opacity:.9}
+</style></head><body>
+<div id="hint">Drag to select area · click for full screen · Esc to cancel</div>
+<div id="box"></div><div id="lbl"></div>
+<script>
+const box = document.getElementById('box'), lbl = document.getElementById('lbl');
+let sx, sy, drag = false;
+const rectOf = (x, y) => ({ x: Math.min(sx, x), y: Math.min(sy, y), width: Math.abs(x - sx), height: Math.abs(y - sy) });
+addEventListener('mousedown', e => { if (e.button) return; drag = true; sx = e.clientX; sy = e.clientY; document.getElementById('hint').style.display = 'none'; document.body.style.background = 'transparent'; });
+addEventListener('mousemove', e => {
+  if (!drag) return;
+  const r = rectOf(e.clientX, e.clientY);
+  Object.assign(box.style, { display: 'block', left: r.x + 'px', top: r.y + 'px', width: r.width + 'px', height: r.height + 'px' });
+  lbl.style.display = 'block'; lbl.style.left = r.x + 'px'; lbl.style.top = Math.max(0, r.y - 24) + 'px';
+  lbl.textContent = Math.round(r.width * devicePixelRatio) + ' × ' + Math.round(r.height * devicePixelRatio);
+});
+addEventListener('mouseup', e => {
+  if (!drag) return; drag = false;
+  const r = rectOf(e.clientX, e.clientY);
+  if (r.width < 6 || r.height < 6) api.selectDone({ x: 0, y: 0, width: innerWidth, height: innerHeight });
+  else api.selectDone({ x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) });
+});
+addEventListener('keydown', e => { if (e.key === 'Escape') api.selectDone(null); });
+addEventListener('contextmenu', e => { e.preventDefault(); api.selectDone(null); });
+</script></body></html>

@@ -1,0 +1,66 @@
+{
+  "name": "screc",
+  "version": "1.0.0",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "icon": "node scripts/make-icon.js",
+    "dist": "electron-builder --win nsis",
+    "release": "electron-builder --win nsis --publish always"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Joseph1331767/SCREC.git"
+  },
+  "author": "Joseph1331767",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/Joseph1331767/SCREC/issues"
+  },
+  "homepage": "https://github.com/Joseph1331767/SCREC#readme",
+  "description": "Tiny screen recorder bar",
+  "dependencies": {
+    "electron-updater": "^6.8.9",
+    "uiohook-napi": "^1.5.5"
+  },
+  "devDependencies": {
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3"
+  },
+  "productName": "SCREC",
+  "build": {
+    "appId": "com.joseph1331767.screc",
+    "productName": "SCREC",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**",
+      "build/icon.png",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.png",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Joseph1331767",
+        "repo": "SCREC"
+      }
+    ]
+  }
+}
