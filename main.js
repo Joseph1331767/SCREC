@@ -315,7 +315,7 @@ function checkUpdates(manual) {
       autoUpdater.on('update-downloaded', i => toBar('update', { state: 'ready', version: i.version }));
       autoUpdater.on('error', e => toBar('update', { state: 'error', message: String(e && e.message || e) }));
     }
-    autoUpdater.checkForUpdates();
+    autoUpdater.checkForUpdates().catch(() => {});
   } catch (e) { toBar('update', { state: 'error', message: String(e.message || e) }); }
 }
 
