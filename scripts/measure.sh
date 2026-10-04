@@ -21,11 +21,11 @@ label=$1; steps=$2; shift 2
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT" || exit 1
 powershell -NoProfile -File "$(cygpath -w "$ROOT/scripts/killchrome.ps1")" >/dev/null 2>&1; sleep 2
-rm -rf ~/Videos/SCREC
+rm -rf "$TEMP/screc-selftest-videos/SCREC"
 URL="${CHROMEURL:-https://www.youtube.com/watch?v=aqz-KE-bpKQ}"
 env "$@" SCREC_SELFTEST=1 SCREC_SELFTEST_REAL=1 SCREC_STEPS="$steps" SCREC_SELFTEST_CHROME="$URL" timeout 170 npx electron . >"$ROOT/.measure.log" 2>&1
 FF="$ROOT/node_modules/ffmpeg-static/ffmpeg.exe"
-OUT=$(ls ~/Videos/SCREC/*.mp4 2>/dev/null | head -1)
+OUT=$(ls "$TEMP/screc-selftest-videos/SCREC"/*.mp4 2>/dev/null | head -1)
 if [ -z "$OUT" ]; then echo "RESULT $label ERROR no mp4 produced (see .measure.log)"; exit 2; fi
 SAMPLES=$("$FF" -v error -i "$OUT" -vf "fps=1,crop=700:350:100:60,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-" -f null - 2>&1 | grep YAVG | sed 's/.*YAVG=//;s/\..*//' | tr '\n' ' ')
 VERDICT=OK; i=0

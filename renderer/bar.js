@@ -7,7 +7,7 @@ let zoomCb = null;
 api.onZoom(s => zoomCb && zoomCb(s));
 let speedCb = null;
 api.onSpeed(sp => speedCb && speedCb(sp));
-api.onRenderProgress(p => { if (rec && rec.baking) $('timer').textContent = 'Baking ' + Math.round(p * 100) + '%'; });
+api.onRenderProgress(p => { if (rec && rec.baking) $('timer').textContent = 'Bake ' + Math.round(p * 100) + '%'; });
 let resultFile = null, resultKind = null;
 
 // ---------- layout ----------
@@ -207,6 +207,7 @@ async function startRecording({ region, display, settings }) {
 
 function elapsed() { return rec ? rec.acc + (rec.paused ? 0 : performance.now() - rec.t0) : 0; }
 function updateTimer() {
+  if (rec && rec.baking) return; // the slot shows render progress now
   const s = Math.floor(elapsed() / 1000), p = n => String(n).padStart(2, '0');
   $('timer').textContent = (s >= 3600 ? p(Math.floor(s / 3600)) + ':' : '') + p(Math.floor(s / 60) % 60) + ':' + p(s % 60);
 }
@@ -217,19 +218,23 @@ $('btnPause').onclick = () => {
   updateTimer();
 };
 function setPaused(p) { show('icPause', !p); show('icPlay', p); $('dot').classList.toggle('paused', p); $('btnPause').title = p ? 'Resume' : 'Pause'; }
-$('btnStop').onclick = () => stopRecording();
+$('btnStop').onclick = () => { if (rec && rec.baking) { api.cancelBake(); $('timer').textContent = 'Cancelling'; } else stopRecording(); };
 
 async function stopRecording() {
   if (!rec || rec.stopping) return;
   rec.stopping = true;
   const r = rec;
   if (r.mr.state !== 'inactive') r.mr.stop();
-  clearInterval(r.timer); r.ds.getTracks().forEach(t => t.stop()); // capture off before any layout change
+  clearInterval(r.timer); clearInterval(r.tick); r.ds.getTracks().forEach(t => t.stop()); // capture off before any layout change
   r.segs.forEach((s, i) => { s.end = i + 1 < r.segs.length ? r.segs[i + 1].t : null; });
   const total = elapsed() / 1000;
   const segments = r.segs.map(s => ({ start: s.t, end: s.end, speed: s.speed })).filter(s => s.end == null || s.end > s.start);
   r.finishOpts = { segments, hasAudio: r.hasAudio, fps: r.fps, total };
-  if (segments.some(s => s.speed !== 1)) { r.baking = true; ['btnPause', 'btnStop', 'dot'].forEach(id => show(id, false)); $('spd').classList.add('ghost'); $('timer').textContent = 'Baking 0%'; }
+  if (segments.some(s => s.speed !== 1)) {
+    // capture is already off, so the bar may change now. The stop button becomes "cancel render" (keeps the raw file).
+    r.baking = true; ['btnPause', 'dot', 'spd'].forEach(id => show(id, false));
+    $('btnStop').title = 'Cancel render (keep unedited recording)'; $('timer').textContent = 'Bake 0%';
+  }
   const result = await r.donePromise;
   await teardown();
   showResult(result);
@@ -241,7 +246,7 @@ async function teardown() {
     rec.ds.getTracks().forEach(t => t.stop()); rec.micStream.forEach(s => s.getTracks().forEach(t => t.stop()));
     try { await rec.ac.close(); } catch { /* ignore */ }
     rec.video.srcObject = null; rec = null; marks.clear(); zoomCb = null; speedCb = null;
-    ['btnPause', 'btnStop', 'dot'].forEach(id => show(id, true));
+    ['btnPause', 'btnStop', 'dot', 'spd'].forEach(id => show(id, true)); $('btnStop').title = 'Stop';
   }
   api.recState(false); // also when start-up failed before `rec` existed, so main stops guarding the bar
   $('app').classList.remove('recording');

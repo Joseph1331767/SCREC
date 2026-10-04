@@ -2,7 +2,10 @@ const { app, BrowserWindow, ipcMain, screen, desktopCapturer, session, dialog, T
 const path = require('path');
 const fs = require('fs');
 
-if (process.env.SCREC_SELFTEST) app.setPath('userData', path.join(app.getPath('temp'), 'screc-selftest'));
+if (process.env.SCREC_SELFTEST) { // tests get their own profile AND their own recordings folder -- never touch the user's real one
+  app.setPath('userData', path.join(app.getPath('temp'), 'screc-selftest'));
+  app.setPath('videos', path.join(app.getPath('temp'), 'screc-selftest-videos'));
+}
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) app.quit();
 
@@ -27,6 +30,7 @@ let settings = { ...defaults };
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json');
 function loadSettings() {
   try { settings = { ...defaults, ...JSON.parse(fs.readFileSync(settingsFile(), 'utf8')) }; } catch { /* first run */ }
+  if (process.env.SCREC_SELFTEST) settings.saveDir = path.join(app.getPath('videos'), 'SCREC'); // tests never use the real recordings folder
 }
 function saveSettings() {
   try { fs.mkdirSync(path.dirname(settingsFile()), { recursive: true }); fs.writeFileSync(settingsFile(), JSON.stringify(settings, null, 2)); } catch { /* ignore */ }
@@ -225,6 +229,7 @@ ipcMain.handle('rec:open', (_e, ext) => {
   return recPath;
 });
 ipcMain.handle('rec:chunk', (_e, buf) => new Promise(res => recStream.write(Buffer.from(buf), () => res())));
+ipcMain.on('rec:cancelBake', () => { try { require('./render').cancel(); } catch { /* ignore */ } });
 ipcMain.handle('rec:finish', async (_e, opts) => {
   const file = recPath;
   await new Promise(res => recStream.end(res));
@@ -233,7 +238,10 @@ ipcMain.handle('rec:finish', async (_e, opts) => {
   const { bake, needsBake } = require('./render');
   if (opts && opts.segments && needsBake(opts.segments)) {
     try { out = await bake(file, opts.segments, opts, p => toBar('render:progress', p)); }
-    catch (e) { toBar('error', 'Speed render failed — kept the raw recording. ' + e.message); }
+    catch (e) {
+      toBar('error', e.message === 'cancelled' ? 'Render cancelled — kept the raw recording (speed changes not applied).'
+        : 'Speed render failed — kept the raw recording. ' + e.message);
+    }
   }
   return { kind: 'video', file: out, name: path.basename(out) };
 });
@@ -559,4 +567,6 @@ app.whenReady().then(() => {
   if (process.env.SCREC_SELFTEST) require('./scripts/selftest')({ app, barWin, screen, startSelect, beginVideo, captureImage, ipcMain, hk, act, swallowed: () => heldKeys.size + heldButtons.size, getSettings: () => settings });
 });
 app.on('window-all-closed', e => e.preventDefault());
-app.on('will-quit', () => { try { hooks && hooks.stop(); } catch { /* ignore */ } if (setLevel.t) { clearTimeout(setLevel.t); saveSettings(); } });
+app.on('will-quit', () => {
+  try { require('./render').cancel(); } catch { /* ignore */ } 
+  try { hooks && hooks.stop(); } catch { /* ignore */ } if (setLevel.t) { clearTimeout(setLevel.t); saveSettings(); } });

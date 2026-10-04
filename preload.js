@@ -22,6 +22,8 @@ contextBridge.exposeInMainWorld('api', {
   onSpeed: fn => on('speed:set', fn),
   onSettingsChanged: fn => on('settings:changed', fn),
   onRenderProgress: fn => on('render:progress', fn),
+  cancelBake: () => ipcRenderer.send('rec:cancelBake'),
+  cancelBake: () => ipcRenderer.send('rec:cancelBake'),
   moveFile: f => ipcRenderer.invoke('file:move', f),
   reveal: f => ipcRenderer.send('file:reveal', f),
   deleteFile: f => ipcRenderer.send('file:delete', f),

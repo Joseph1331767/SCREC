@@ -89,6 +89,7 @@ module.exports = ({ app, barWin, screen, captureImage, beginVideo, hk, act, swal
     log('after release, swallowed keys/buttons: ' + swallowed());
     await sleep(6000); // watch for lingering damage (white/black video)
     await stop();
+    if (process.env.SCREC_BARSHOT) { await sleep(2500); const img = await barWin.webContents.capturePage(); fs.writeFileSync(process.env.SCREC_BARSHOT, img.toPNG()); log('bar screenshot saved'); }
     await sleep(12000);
     log('files: ' + fs.readdirSync(app.getPath('videos') + '/SCREC').join(', '));
     ps.kill();
