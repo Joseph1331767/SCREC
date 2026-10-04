@@ -2,9 +2,9 @@ const { app, BrowserWindow, ipcMain, screen, desktopCapturer, session, dialog, T
 const path = require('path');
 const fs = require('fs');
 
+if (process.env.SCREC_SELFTEST) app.setPath('userData', path.join(app.getPath('temp'), 'screc-selftest'));
 if (!app.requestSingleInstanceLock()) { app.quit(); }
 
-const BAR_W = 360;
 const defaults = {
   saveDir: path.join(app.getPath('videos'), 'SCREC'),
   resolution: 'auto', // auto | 720 | 1080 | 1440 | 2160
@@ -45,31 +45,67 @@ const stamp = () => {
 const toBar = (ch, ...a) => { if (barWin && !barWin.isDestroyed()) barWin.webContents.send(ch, ...a); };
 
 // ---------- bar ----------
+const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), Math.max(lo, hi));
 function createBar() {
   const wa = screen.getPrimaryDisplay().workArea;
-  const pos = settings.barPos || { x: Math.round(wa.x + wa.width / 2 - BAR_W / 2), y: wa.y + 16 };
+  let pos = { x: Math.round(wa.x + wa.width / 2 - 70), y: wa.y };
+  if (settings.barPos) {
+    const d = screen.getDisplayNearestPoint(settings.barPos);
+    pos = {
+      x: clamp(settings.barPos.x, d.workArea.x, d.workArea.x + d.workArea.width - 40),
+      y: clamp(settings.barPos.y, d.workArea.y, d.workArea.y + d.workArea.height - 30),
+    };
+  }
   barWin = new BrowserWindow({
-    x: pos.x, y: pos.y, width: BAR_W, height: 56, useContentSize: true,
+    x: pos.x, y: pos.y, width: 140, height: 30,
     frame: false, transparent: true, resizable: false, maximizable: false, fullscreenable: false,
     alwaysOnTop: true, skipTaskbar: true, hasShadow: false, show: false, backgroundColor: '#00000000',
     webPreferences: { preload, backgroundThrottling: false },
   });
   barWin.setAlwaysOnTop(true, 'screen-saver');
-  barWin.setContentProtection(true); // keep the bar out of recordings / screenshots
   barWin.loadFile(path.join(__dirname, 'renderer', 'bar.html'));
-  barWin.once('ready-to-show', () => { if (!process.argv.includes('--hidden-start') || true) barWin.show(); });
-  barWin.on('moved', () => { const [x, y] = barWin.getPosition(); settings.barPos = { x, y }; saveSettings(); });
+  barWin.once('ready-to-show', () => barWin.show());
 }
 
-ipcMain.on('bar:height', (_e, h) => {
+// Window size follows the content. It grows away from the nearest screen edge so the bar itself never jumps.
+ipcMain.on('bar:size', (_e, w, h) => {
   if (!barWin) return;
+  w = Math.ceil(w); h = Math.ceil(h);
   const b = barWin.getBounds();
   const wa = screen.getDisplayMatching(b).workArea;
-  barWin.setContentSize(BAR_W, Math.max(40, Math.ceil(h)));
-  const nb = barWin.getBounds();
-  let y = nb.y;
-  if (y + nb.height > wa.y + wa.height) y = Math.max(wa.y, wa.y + wa.height - nb.height);
-  if (y !== nb.y) barWin.setPosition(nb.x, y);
+  const right = b.x + b.width / 2 > wa.x + wa.width / 2;
+  const bottom = b.y + b.height / 2 > wa.y + wa.height / 2;
+  const x = clamp(right ? b.x + b.width - w : b.x, wa.x, wa.x + wa.width - w);
+  const y = clamp(bottom ? b.y + b.height - h : b.y, wa.y, wa.y + wa.height - h);
+  barWin.setBounds({ x, y, width: w, height: h });
+  toBar('bar:anchor', { right, bottom });
+});
+
+// Manual drag so we can snap to screen edges when released.
+let drag = null;
+ipcMain.on('bar:dragStart', () => {
+  if (!barWin || drag) return;
+  const p = screen.getCursorScreenPoint(), b = barWin.getBounds();
+  drag = { dx: p.x - b.x, dy: p.y - b.y, w: b.width, h: b.height };
+  drag.t = setInterval(() => {
+    const c = screen.getCursorScreenPoint();
+    barWin.setBounds({ x: c.x - drag.dx, y: c.y - drag.dy, width: drag.w, height: drag.h });
+  }, 8);
+});
+ipcMain.on('bar:dragEnd', () => {
+  if (!drag) return;
+  clearInterval(drag.t); drag = null;
+  const b = barWin.getBounds();
+  const wa = screen.getDisplayMatching(b).workArea;
+  const T = 36;
+  let x = b.x, y = b.y;
+  if (Math.abs(b.x - wa.x) < T) x = wa.x;
+  else if (Math.abs(b.x + b.width - (wa.x + wa.width)) < T) x = wa.x + wa.width - b.width;
+  if (Math.abs(b.y - wa.y) < T) y = wa.y;
+  else if (Math.abs(b.y + b.height - (wa.y + wa.height)) < T) y = wa.y + wa.height - b.height;
+  x = clamp(x, wa.x, wa.x + wa.width - b.width); y = clamp(y, wa.y, wa.y + wa.height - b.height);
+  barWin.setBounds({ x, y, width: b.width, height: b.height });
+  settings.barPos = { x, y }; saveSettings();
 });
 
 // ---------- tray ----------
@@ -183,7 +219,6 @@ ipcMain.handle('rec:finish', () => new Promise(res => {
   const file = recPath;
   recStream.end(() => { recStream = null; recPath = null; res({ kind: 'video', file, name: path.basename(file) }); });
 }));
-ipcMain.on('rec:state', (_e, recording) => { if (!recording) stopZoom(true); });
 
 // ---------- settings / result actions ----------
 ipcMain.handle('settings:get', () => ({ ...settings, version: app.getVersion(), packaged: app.isPackaged }));
@@ -223,62 +258,56 @@ ipcMain.on('file:delete', (_e, f) => { try { fs.unlinkSync(f); } catch { /* igno
 ipcMain.on('file:copyImage', (_e, f) => clipboard.writeImage(nativeImage.createFromPath(f)));
 ipcMain.on('file:copyPath', (_e, f) => clipboard.writeText(f));
 
-// ---------- zoom hotkey (Ctrl+Alt+Shift held, then LMB) ----------
+// ---------- zoom hotkey (Ctrl+Alt+Shift held, then hold LMB) ----------
+// The overlay shows a snapshot taken at press time. A live overlay would be captured by the screen
+// capture (window exclusion isn't honoured) and feed back into itself, so the zoom is a frozen still.
 let uio = null, UKey = null;
 const down = new Set();
-let comboActive = false, zooming = false, zoomTimer = null, zoomDisplay = null, zoomPrepared = null;
+let zooming = false, zoomTimer = null, zoomDisplay = null;
 
-function createZoomWin(d) {
+function ensureZoomWin(d) {
+  if (zoomWin && !zoomWin.isDestroyed() && zoomDisplay && zoomDisplay.id === d.id) return;
   if (zoomWin && !zoomWin.isDestroyed()) zoomWin.destroy();
+  zoomDisplay = d;
   zoomWin = new BrowserWindow({
     x: d.bounds.x, y: d.bounds.y, width: d.bounds.width, height: d.bounds.height,
     frame: false, transparent: true, alwaysOnTop: true, skipTaskbar: true, resizable: false, movable: false,
     focusable: false, fullscreenable: false, hasShadow: false, show: false, backgroundColor: '#00000000',
-    webPreferences: { preload, backgroundThrottling: false },
+    webPreferences: { preload },
   });
   zoomWin.setAlwaysOnTop(true, 'screen-saver');
   zoomWin.setIgnoreMouseEvents(true);
-  zoomWin.setContentProtection(true);
   zoomWin.loadFile(path.join(__dirname, 'renderer', 'zoom.html'));
-  zoomPrepared = null;
 }
-async function prepareZoom() {
-  if (!settings.zoom) return;
+function sendZoom(active) {
   const p = screen.getCursorScreenPoint();
-  const d = screen.getDisplayNearestPoint(p);
-  if (!zoomWin || zoomWin.isDestroyed() || !zoomDisplay || zoomDisplay.id !== d.id) { zoomDisplay = d; createZoomWin(d); }
-  const src = await sourceFor(d, true).catch(() => null);
-  if (!src) return;
-  zoomPrepared = src.id;
-  const send = () => zoomWin.webContents.send('zoom:prepare', { sourceId: src.id, x: d.bounds.x, y: d.bounds.y });
-  if (zoomWin.webContents.isLoading()) zoomWin.webContents.once('did-finish-load', send); else send();
+  if (zoomWin && !zoomWin.isDestroyed()) zoomWin.webContents.send('zoom:state', { active, x: p.x, y: p.y });
 }
-function releaseZoomStream() {
-  if (zoomWin && !zoomWin.isDestroyed()) { zoomWin.hide(); zoomWin.webContents.send('zoom:release'); }
-  zoomPrepared = null;
-}
-function startZoom() {
-  if (!settings.zoom || zooming || !zoomWin || zoomWin.isDestroyed() || !zoomPrepared) return;
+async function startZoom() {
+  if (!settings.zoom || zooming) return;
   zooming = true;
-  zoomWin.showInactive();
-  tick();
-  zoomTimer = setInterval(tick, 8);
-  function tick() {
-    const p = screen.getCursorScreenPoint();
-    const msg = { active: true, x: p.x, y: p.y };
-    if (zoomWin && !zoomWin.isDestroyed()) zoomWin.webContents.send('zoom:state', msg);
-    toBar('zoom:state', msg);
-  }
+  try {
+    const d = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+    const visible = zoomWin && !zoomWin.isDestroyed() && zoomWin.isVisible() && zoomDisplay && zoomDisplay.id === d.id;
+    if (!visible) {
+      ensureZoomWin(d);
+      if (zoomWin.webContents.isLoading()) await new Promise(r => zoomWin.webContents.once('did-finish-load', r));
+      const src = await sourceFor(d); // overlay is hidden here, so the snapshot is clean
+      if (!zooming) return;
+      zoomWin.webContents.send('zoom:image', src.thumbnail.toJPEG(92), { x: d.bounds.x, y: d.bounds.y });
+      await new Promise(r => { const t = setTimeout(r, 1500); ipcMain.once('zoom:ready', () => { clearTimeout(t); r(); }); });
+      if (!zooming) return;
+      zoomWin.showInactive();
+    }
+    sendZoom(true);
+    zoomTimer = setInterval(() => sendZoom(true), 8);
+  } catch (e) { console.error('zoom failed', e); zooming = false; }
 }
-function stopZoom(force) {
+function stopZoom() {
   if (zoomTimer) { clearInterval(zoomTimer); zoomTimer = null; }
   if (!zooming) return;
   zooming = false;
-  const p = screen.getCursorScreenPoint();
-  const msg = { active: false, x: p.x, y: p.y };
-  if (zoomWin && !zoomWin.isDestroyed()) zoomWin.webContents.send('zoom:state', msg);
-  toBar('zoom:state', msg);
-  if (!comboActive || force) setTimeout(() => { if (!zooming && !comboActive) releaseZoomStream(); }, 400);
+  sendZoom(false);
 }
 ipcMain.on('zoom:hide', () => { if (!zooming && zoomWin && !zoomWin.isDestroyed()) zoomWin.hide(); });
 
@@ -290,13 +319,8 @@ function setupHooks() {
   const grp = { ctrl: [UKey.Ctrl, UKey.CtrlRight], alt: [UKey.Alt, UKey.AltRight], shift: [UKey.Shift, UKey.ShiftRight] };
   const has = g => grp[g].some(k => down.has(k));
   const combo = () => has('ctrl') && has('alt') && has('shift');
-  const update = () => {
-    const c = combo();
-    if (c && !comboActive) { comboActive = true; prepareZoom(); }
-    else if (!c && comboActive) { comboActive = false; if (!zooming) setTimeout(() => { if (!comboActive && !zooming) releaseZoomStream(); }, 400); }
-  };
-  uio.on('keydown', e => { down.add(e.keycode); update(); });
-  uio.on('keyup', e => { down.delete(e.keycode); update(); });
+  uio.on('keydown', e => { down.add(e.keycode); });
+  uio.on('keyup', e => { down.delete(e.keycode); });
   uio.on('mousedown', e => { if (e.button === 1 && combo()) startZoom(); });
   uio.on('mouseup', e => { if (e.button === 1) stopZoom(); });
   uio.start();
@@ -326,7 +350,7 @@ app.whenReady().then(() => {
   setupDisplayMedia();
   createBar(); createTray(); setupHooks();
   setTimeout(() => checkUpdates(false), 4000);
-  if (process.env.SCREC_SELFTEST) require('./scripts/selftest')({ app, barWin, screen, startSelect, beginVideo, captureImage, ipcMain, getSettings: () => settings });
+  if (process.env.SCREC_SELFTEST) require('./scripts/selftest')({ app, barWin, screen, startSelect, beginVideo, captureImage, ipcMain, startZoom, stopZoom, getSettings: () => settings });
 });
 app.on('window-all-closed', e => e.preventDefault());
 app.on('will-quit', () => { try { uio && uio.stop(); } catch { /* ignore */ } });

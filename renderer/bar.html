@@ -1,19 +1,16 @@
 <!doctype html><html><head><meta charset="utf-8"><title>SCREC</title><link rel="stylesheet" href="bar.css"></head>
 <body><div id="app">
   <div id="bar">
-    <div id="grip" title="Drag">⋮⋮</div>
-    <div id="idle" class="row">
-      <button id="btnImg" class="tool" title="Screenshot"><svg viewBox="0 0 24 24"><path d="M4 7h3l2-2h6l2 2h3v12H4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.5" fill="none" stroke="currentColor" stroke-width="2"/></svg><span>Image</span></button>
-      <button id="btnVid" class="tool rec" title="Record video"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6" fill="currentColor"/></svg><span>Video</span></button>
-      <span class="spacer"></span>
-      <button id="btnSet" class="icon" title="Settings">⚙</button>
-      <button id="btnHide" class="icon" title="Hide to tray">–</button>
+    <div id="grip" title="Drag to move"><svg viewBox="0 0 10 16"><g fill="currentColor"><circle cx="3" cy="3" r="1.3"/><circle cx="7" cy="3" r="1.3"/><circle cx="3" cy="8" r="1.3"/><circle cx="7" cy="8" r="1.3"/><circle cx="3" cy="13" r="1.3"/><circle cx="7" cy="13" r="1.3"/></g></svg></div>
+    <div id="idle" class="grp">
+      <button id="btnVid" class="ib rec" title="Record video"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7" fill="currentColor"/></svg></button>
+      <button id="btnImg" class="ib" title="Screenshot"><svg viewBox="0 0 24 24"><path d="M3 8h4l2-3h6l2 3h4v11H3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="13.5" r="3.5" fill="none" stroke="currentColor" stroke-width="2"/></svg></button>
+      <button id="btnSet" class="ib" title="Settings"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="16" cy="7" r="2.5" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="8" cy="17" r="2.5" fill="none" stroke="currentColor" stroke-width="2"/></svg></button>
     </div>
-    <div id="recing" class="row hidden">
-      <span id="dot"></span><span id="timer">00:00</span><span id="zmark" class="hidden">🔍 2×</span>
-      <span class="spacer"></span>
-      <button id="btnPause" class="tool">Pause</button>
-      <button id="btnStop" class="tool stop">Stop</button>
+    <div id="recing" class="grp hidden">
+      <span id="dot"></span><span id="timer">00:00</span>
+      <button id="btnPause" class="ib" title="Pause"><svg id="icPause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14" stroke="currentColor" stroke-width="3.5" stroke-linecap="round"/></svg><svg id="icPlay" class="hidden" viewBox="0 0 24 24"><path d="M8 5l11 7-11 7z" fill="currentColor"/></svg></button>
+      <button id="btnStop" class="ib stop" title="Stop"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg></button>
     </div>
   </div>
   <div id="msg" class="hidden"></div>
@@ -31,7 +28,7 @@
     <label class="chk"><input type="checkbox" id="cZoom"> Zoom: Ctrl+Alt+Shift + hold LMB</label>
     <label class="chk"><input type="checkbox" id="cStart"> Start with Windows</label>
     <div class="dirrow"><span id="dir"></span><button id="btnDir" class="small">Change</button></div>
-    <div class="dirrow"><span id="ver"></span><button id="btnUpd" class="small">Check updates</button><button id="btnQuit" class="small danger">Quit</button></div>
+    <div class="dirrow"><span id="ver"></span><button id="btnUpd" class="small">Updates</button><button id="btnHide" class="small">Hide</button><button id="btnQuit" class="small danger">Quit</button></div>
   </div>
 
   <div id="result" class="hidden">

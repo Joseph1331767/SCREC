@@ -3,7 +3,7 @@ Tiny screen recorder bar. Image / Video buttons → drag an area → record. Pau
 
 - Device audio (loopback) + mic (auto-picks devices labelled headset / wireless)
 - Resolution: auto (selection size) or 720p–4K; scale-to-fit / stretch / fill
-- **Zoom:** hold `Ctrl+Alt+Shift`, then hold left mouse → 2× zoom around the cursor (also baked into recordings)
+- **Zoom:** hold `Ctrl+Alt+Shift`, then hold left mouse → 2× zoom around the cursor (a frozen snapshot, so it never feeds back into recordings)
 - Starts with Windows, tray icon, auto-updates from GitHub Releases
 
 ## Dev

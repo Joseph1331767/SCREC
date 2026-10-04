@@ -1,20 +1,20 @@
 <!doctype html><html><head><meta charset="utf-8"><style>
 html,body{margin:0;height:100%;overflow:hidden;background:transparent}
-video{position:fixed;inset:0;width:100vw;height:100vh;object-fit:fill;will-change:transform}
-</style></head><body><video id="v" muted autoplay></video>
+img{position:fixed;inset:0;width:100vw;height:100vh;object-fit:fill;will-change:transform}
+</style></head><body><img id="v" alt="">
 <script>
+// Shows a snapshot of the screen and scales it about the cursor, so the point under the cursor stays put
+// and the view can never go past the screen edges.
 const v = document.getElementById('v');
-let stream = null, origin = { x: 0, y: 0 }, z = 1, target = 1, mx = 0, my = 0, raf = 0;
+let origin = { x: 0, y: 0 }, z = 1, target = 1, mx = 0, my = 0, raf = 0, url = null;
 const Z = 2;
-api.onZoomPrepare(async ({ sourceId, x, y }) => {
-  origin = { x, y };
-  if (stream) return;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId, maxFrameRate: 60 } } });
-    v.srcObject = stream; v.play();
-  } catch (e) { console.error(e); }
+api.onZoomImage((buf, o) => {
+  origin = o; z = 1; target = 1;
+  if (url) URL.revokeObjectURL(url);
+  url = URL.createObjectURL(new Blob([buf], { type: 'image/jpeg' }));
+  v.onload = () => { v.style.transform = 'none'; api.zoomReady(); };
+  v.src = url;
 });
-api.onZoomRelease(() => { if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; v.srcObject = null; } });
 api.onZoom(s => {
   mx = s.x - origin.x; my = s.y - origin.y;
   target = s.active ? Z : 1;

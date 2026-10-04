@@ -1,13 +1,17 @@
 const $ = id => document.getElementById(id);
 let S = {};            // settings
 let rec = null;        // active recording session
-let zoomCb = null;
-api.onZoom(s => zoomCb && zoomCb(s));
 let resultFile = null, resultKind = null;
 
 // ---------- layout ----------
-new ResizeObserver(() => api.setHeight($('app').offsetHeight)).observe($('app'));
-const show = (id, on) => $(id).classList.toggle('hidden', !on);
+new ResizeObserver(() => api.setSize($('app').offsetWidth, $('app').offsetHeight)).observe($('app'));
+api.onAnchor(a => { $('app').classList.toggle('right', a.right); $('app').classList.toggle('up', a.bottom); });
+const grip = $('grip');
+grip.addEventListener('pointerdown', e => { grip.setPointerCapture(e.pointerId); api.dragStart(); });
+grip.addEventListener('pointerup', () => api.dragEnd());
+grip.addEventListener('pointercancel', () => api.dragEnd());
+const syncOpen = () => $('app').classList.toggle('open', !$('panel').classList.contains('hidden') || !$('result').classList.contains('hidden'));
+const show = (id, on) => { $(id).classList.toggle('hidden', !on); if (id === 'panel' || id === 'result') syncOpen(); };
 function toast(t) { $('msg').textContent = t; show('msg', !!t); }
 
 // ---------- settings ----------
@@ -24,7 +28,7 @@ bind('sRes', 'resolution', e => e.value); bind('sFit', 'fit', e => e.value); bin
 bind('cSys', 'system', e => e.checked); bind('cMic', 'mic', e => e.checked); bind('cZoom', 'zoom', e => e.checked);
 bind('cStart', 'startup', e => e.checked); bind('sMic', 'micDevice', e => e.value);
 $('btnDir').onclick = async () => { $('dir').textContent = await api.pickDir(); };
-$('btnSet').onclick = () => { show('panel', $('panel').classList.contains('hidden')); };
+$('btnSet').onclick = () => { const open = $('panel').classList.contains('hidden'); show('panel', open); if (open) show('result', false); };
 $('btnHide').onclick = () => api.minimize();
 $('btnQuit').onclick = () => api.quit();
 $('btnUpd').onclick = () => { toast('Checking for updates…'); api.checkUpdates(); };
@@ -114,21 +118,9 @@ async function startRecording({ region, display, settings }) {
   const cs = canvas.captureStream(0);
   const vtrack = cs.getVideoTracks()[0];
 
-  // zoom state (region constrained, scaled about the cursor)
-  const zs = { z: 1, target: 1, mx: 0, my: 0 };
-  zoomCb = s => {
-    zs.target = s.active ? 2 : 1;
-    zs.mx = Math.min(Math.max(((s.x - display.x) * k - bx) / bw, 0), 1);
-    zs.my = Math.min(Math.max(((s.y - display.y) * k - by) / bh, 0), 1);
-    $('zmark').classList.toggle('hidden', !s.active);
-  };
-
   const draw = () => {
-    zs.z += (zs.target - zs.z) * 0.3; if (Math.abs(zs.target - zs.z) < 0.005) zs.z = zs.target;
-    const sw = bw / zs.z, sh = bh / zs.z;
-    const sx = bx + zs.mx * bw * (1 - 1 / zs.z), sy = by + zs.my * bh * (1 - 1 / zs.z);
     if (dx || dy) { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, ow, oh); }
-    ctx.drawImage(video, sx, sy, sw, sh, dx, dy, dw, dh);
+    ctx.drawImage(video, bx, by, bw, bh, dx, dy, dw, dh);
     vtrack.requestFrame && vtrack.requestFrame();
   };
   const timer = setInterval(draw, 1000 / fps);
@@ -164,8 +156,7 @@ async function startRecording({ region, display, settings }) {
   rec.t0 = performance.now();
   rec.tick = setInterval(updateTimer, 250);
   show('idle', false); show('recing', true); show('panel', false); show('result', false); toast('');
-  $('btnPause').textContent = 'Pause'; $('dot').classList.remove('paused'); updateTimer();
-  api.recState(true);
+  setPaused(false); updateTimer();
 }
 
 function elapsed() { return rec ? rec.acc + (rec.paused ? 0 : performance.now() - rec.t0) : 0; }
@@ -175,10 +166,11 @@ function updateTimer() {
 }
 $('btnPause').onclick = () => {
   if (!rec) return;
-  if (rec.paused) { rec.mr.resume(); rec.t0 = performance.now(); rec.paused = false; $('btnPause').textContent = 'Pause'; $('dot').classList.remove('paused'); }
-  else { rec.mr.pause(); rec.acc += performance.now() - rec.t0; rec.paused = true; $('btnPause').textContent = 'Resume'; $('dot').classList.add('paused'); }
+  if (rec.paused) { rec.mr.resume(); rec.t0 = performance.now(); rec.paused = false; setPaused(false); }
+  else { rec.mr.pause(); rec.acc += performance.now() - rec.t0; rec.paused = true; setPaused(true); }
   updateTimer();
 };
+function setPaused(p) { show('icPause', !p); show('icPlay', p); $('dot').classList.toggle('paused', p); $('btnPause').title = p ? 'Resume' : 'Pause'; }
 $('btnStop').onclick = () => stopRecording();
 
 async function stopRecording() {
@@ -195,10 +187,9 @@ async function teardown() {
     clearInterval(rec.timer); clearInterval(rec.tick);
     rec.ds.getTracks().forEach(t => t.stop()); rec.micStream.forEach(s => s.getTracks().forEach(t => t.stop()));
     try { await rec.ac.close(); } catch { /* ignore */ }
-    rec.video.srcObject = null; rec = null; zoomCb = null;
+    rec.video.srcObject = null; rec = null;
   }
-  show('recing', false); show('idle', true); $('zmark').classList.add('hidden');
-  api.recState(false);
+  show('recing', false); show('idle', true);
 }
 
 // ---------- result ----------
