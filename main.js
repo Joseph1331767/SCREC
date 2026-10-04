@@ -1,4 +1,4 @@
-const { app, globalShortcut, BrowserWindow, ipcMain, screen, desktopCapturer, session, dialog, Tray, Menu, nativeImage, clipboard, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, desktopCapturer, session, dialog, Tray, Menu, nativeImage, clipboard, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -74,6 +74,7 @@ function createBar() {
 
 // Window size follows the content. It grows away from the nearest screen edge so the bar itself never jumps.
 ipcMain.on('bar:size', (_e, w, h) => {
+  if (recRegion) return; // never resize while the screen is being captured (see bar.js)
   if (!barWin) return;
   w = Math.ceil(w); h = Math.ceil(h);
   const b = barWin.getBounds();
@@ -89,7 +90,7 @@ ipcMain.on('bar:size', (_e, w, h) => {
 // Manual drag so we can snap to screen edges when released.
 let drag = null;
 ipcMain.on('bar:dragStart', () => {
-  if (!barWin || drag) return;
+  if (!barWin || drag || recRegion) return;
   const p = screen.getCursorScreenPoint(), b = barWin.getBounds();
   drag = { dx: p.x - b.x, dy: p.y - b.y, w: b.width, h: b.height };
   drag.t = setInterval(() => {
@@ -280,12 +281,27 @@ ipcMain.on('file:copyPath', (_e, f) => clipboard.writeText(f));
 const SPEEDS = [0.25, 0.4, 0.6, 0.8, 1, 1.5, 2, 3, 4];
 const K = { ctrl: [29, 3613], alt: [56, 3640], shift: [42, 54], left: 57419, right: 57421, up: 57416, down: 57424 };
 const down = new Set();
-let uio = null;
 let chord = false, chordTimer = null, directing = false, dirTimer = null;
 let overlayDisplay = null, ovWin = null, barHidden = false;
 let lmb = false, rmb = false, rmbTimer = null, rmbLast = null;
 let off = { x: 0, y: 0 };
 let recRegion = null, pendingRegion = null;
+
+// WS_EX_TRANSPARENT (without WS_EX_LAYERED, which would break capture exclusion): Chrome's native occlusion
+// tracker ignores such windows. Without it, a fullscreen overlay makes Chrome think it is covered, it stops
+// painting video (YouTube goes white until clicked) and the capture of that video plane breaks.
+let _koffi = null;
+function markTransparent(win) {
+  if (process.env.SCREC_NOEX) return;
+  try {
+    if (!_koffi) {
+      const koffi = require('koffi'), u = koffi.load('user32.dll');
+      _koffi = { get: u.func('intptr_t __stdcall GetWindowLongPtrW(uint64_t h, int i)'), set: u.func('intptr_t __stdcall SetWindowLongPtrW(uint64_t h, int i, intptr_t v)') };
+    }
+    const h = win.getNativeWindowHandle().readBigUInt64LE(0);
+    _koffi.set(h, -20, Number(_koffi.get(h, -20)) | 0x20);
+  } catch (e) { console.error('markTransparent failed', e); }
+}
 
 // ONE overlay window only. Two stacked topmost windows over hardware video (e.g. YouTube in Chrome) make
 // Windows screen capture go black / the video go white, so box, HUD and live marks all live in this window,
@@ -301,7 +317,8 @@ function ensureOverlay(d) {
     webPreferences: { preload, backgroundThrottling: false },
   });
   ovWin.setAlwaysOnTop(true, 'screen-saver');
-  ovWin.setContentProtection(true); // must NOT be click-through, or exclusion silently stops working
+  ovWin.setContentProtection(true); // must NOT use setIgnoreMouseEvents, or exclusion silently stops working
+  markTransparent(ovWin);
   ovWin.loadFile(path.join(__dirname, 'renderer', 'overlay.html'));
   ovWin.webContents.once('did-finish-load', () => ovWin.webContents.send('overlay:init', { x: d.bounds.x, y: d.bounds.y, width: d.bounds.width, height: d.bounds.height }));
 }
@@ -324,14 +341,14 @@ function directTick() {
   sendBox('box', { x: box.x - d.bounds.x, y: box.y - d.bounds.y, width: box.width, height: box.height, active: lmb, level: settings.zoomLevel || 2 });
   if (recRegion) toBar('zoom:state', { active: lmb, box });
 }
-const hud = text => sendBox('hud', text);
+const hud = text => { if (!process.env.SCREC_NOHUD) sendBox('hud', text); };
 
 function enterDirector() {
   if (!settings.zoom || directing) return;
   directing = true;
   const d = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
   ensureOverlay(d);
-  if (barWin && barWin.isVisible()) { barWin.hide(); barHidden = true; } // keep to a single window over the screen
+  if (!process.env.SCREC_KEEPBAR && barWin && barWin.isVisible()) { barWin.hide(); barHidden = true; } // keep to a single window over the screen
   off = { x: 0, y: 0 };
   ovWin.showInactive();
   directTick();
@@ -378,11 +395,10 @@ function setSpeed(n) {
   hud(sp === 1 ? 'Speed normal' : `Speed ${sp}×`);
 }
 
-// Arrows and 1-9 are only acted on (and swallowed, so games/apps never see them) while the chord is held.
-// uiohook can't block keys, but a registered global hotkey is consumed by Windows.
-const ACCEL = { 57419: 'Left', 57421: 'Right', 57416: 'Up', 57424: 'Down' };
-for (let n = 1; n <= 9; n++) ACCEL[n + 1] = String(n);
-const swallow = new Set();
+// While the chord is held, arrows, 1-9 and the mouse buttons belong to SCREC: they are swallowed by a
+// low-level hook so games/apps never see them (and no window ever receives the click -- a click delivered
+// to our topmost overlay makes Windows capture of hardware video go black/white).
+const ACT_KEYS = new Set([K.left, K.right, K.up, K.down, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 function act(code) {
   if (code === K.left || code === K.right || code === K.up || code === K.down) {
     if (!directing) return;
@@ -391,36 +407,34 @@ function act(code) {
     else if (code === K.up) off.y -= step; else off.y += step;
   } else if (code >= 2 && code <= 10) setSpeed(code - 1);
 }
-function grabKeys() {
-  if (!settings.zoom) return;
-  for (const [code, key] of Object.entries(ACCEL)) {
-    try { if (globalShortcut.register('Ctrl+Alt+Shift+' + key, () => act(+code))) swallow.add(+code); } catch { /* combo taken: key passes through */ }
-  }
-}
-function releaseKeys() { globalShortcut.unregisterAll(); swallow.clear(); }
 const has = g => K[g].some(k => down.has(k));
 const combo = () => has('ctrl') && has('alt') && has('shift');
+const heldKeys = new Set(), heldButtons = new Set(); // swallowed DOWNs, so the matching UP is swallowed too
+// Each handler returns true when the event must be swallowed.
 const hk = {
   keydown(code) {
     down.add(code);
-    if (combo() && !chord) { chord = true; chordTimer = setTimeout(() => { if (chord) enterDirector(); }, 100); }
-    if (chord && !swallow.size) grabKeys();
-    if (!chord || swallow.has(code)) return; // swallowed keys are handled by their global hotkey
-    act(code);
+    if (combo() && !chord) { chord = true; if (settings.zoom && hooks) hooks.startMouse(); chordTimer = setTimeout(() => { if (chord) enterDirector(); }, 100); }
+    if (!chord || !settings.zoom || !ACT_KEYS.has(code)) return false;
+    heldKeys.add(code); act(code); return true;
   },
   keyup(code) {
     down.delete(code);
-    if (chord && !combo()) { chord = false; releaseKeys(); exitDirector(); }
+    if (chord && !combo()) { chord = false; if (hooks) hooks.stopMouse(); exitDirector(); }
+    return heldKeys.delete(code);
   },
   mousedown(btn) {
-    if (!directing) return;
-    if (btn === 1) lmb = true; else if (btn === 2) startStroke();
+    if (!chord || !settings.zoom) return false;
+    heldButtons.add(btn);
+    if (directing) { if (btn === 1) lmb = true; else if (btn === 2) startStroke(); }
+    return true;
   },
   mouseup(btn) {
     if (btn === 1 && lmb) { lmb = false; if (recRegion) toBar('zoom:state', { active: false, box: null }); }
     else if (btn === 2) endStroke();
+    return heldButtons.delete(btn);
   },
-  wheel(rotation) { if (directing && rotation) setLevel(rotation < 0 ? 0.25 : -0.25); },
+  wheel(rotation) { if (!directing || !rotation || !settings.zoom) return false; setLevel(rotation < 0 ? 0.25 : -0.25); return true; },
 };
 
 ipcMain.on('rec:state', (_e, recording) => {
@@ -428,14 +442,18 @@ ipcMain.on('rec:state', (_e, recording) => {
   if (!recording) toBar('zoom:state', { active: false, box: null });
 });
 
+// Windows virtual-key -> internal key codes
+const VK = { 0xA0: 42, 0xA1: 54, 0xA2: 29, 0xA3: 3613, 0xA4: 56, 0xA5: 3640, 0x25: K.left, 0x26: K.up, 0x27: K.right, 0x28: K.down };
+for (let n = 1; n <= 9; n++) VK[0x30 + n] = n + 1;
+let hooks = null;
 function setupHooks() {
-  try { uio = require('uiohook-napi').uIOhook; } catch (e) { console.error('uiohook unavailable', e); return; }
-  uio.on('keydown', e => hk.keydown(e.keycode));
-  uio.on('keyup', e => hk.keyup(e.keycode));
-  uio.on('mousedown', e => hk.mousedown(e.button));
-  uio.on('mouseup', e => hk.mouseup(e.button));
-  uio.on('wheel', e => hk.wheel(e.rotation));
-  uio.start();
+  try {
+    hooks = require('./hooks').start({
+      onKey: (vk, isDown) => { const c = VK[vk]; return c == null ? false : (isDown ? hk.keydown(c) : hk.keyup(c)); },
+      onButton: (btn, isDown) => (isDown ? hk.mousedown(btn) : hk.mouseup(btn)),
+      onWheel: delta => hk.wheel(-delta),
+    });
+  } catch (e) { console.error('input hooks unavailable', e); }
   setTimeout(() => ensureOverlay(screen.getPrimaryDisplay()), 2500); // pre-warm so the first press is instant
 }
 
@@ -463,7 +481,7 @@ app.whenReady().then(() => {
   setupDisplayMedia();
   createBar(); createTray(); setupHooks();
   setTimeout(() => checkUpdates(false), 4000);
-  if (process.env.SCREC_SELFTEST) require('./scripts/selftest')({ app, barWin, screen, startSelect, beginVideo, captureImage, ipcMain, hk, act, screen: screen, swallowed: () => [...swallow], getSettings: () => settings });
+  if (process.env.SCREC_SELFTEST) require('./scripts/selftest')({ app, barWin, screen, startSelect, beginVideo, captureImage, ipcMain, hk, act, screen: screen, swallowed: () => heldKeys.size + heldButtons.size, getSettings: () => settings });
 });
 app.on('window-all-closed', e => e.preventDefault());
-app.on('will-quit', () => { globalShortcut.unregisterAll(); try { uio && uio.stop(); } catch { /* ignore */ } });
+app.on('will-quit', () => { try { hooks && hooks.stop(); } catch { /* ignore */ } });

@@ -1,5 +1,8 @@
 <!doctype html><html><head><meta charset="utf-8"><style>
-html,body{margin:0;height:100%;overflow:hidden;background:transparent;font:600 13px system-ui,"Segoe UI",sans-serif}
+html,body{margin:0;height:100%;overflow:hidden;font:600 13px system-ui,"Segoe UI",sans-serif}
+/* Not fully transparent on purpose: alpha-0 pixels are click/hover-through on Windows, and this overlay must own the
+   pointer while the hotkey is held (hover/clicks reaching Chrome's video makes its capture glitch). */
+body{background:rgba(0,0,0,.012)}
 canvas{position:fixed;inset:0}
 #box{position:fixed;display:none;box-sizing:border-box;border:2px dashed rgba(255,255,255,.95);
   box-shadow:0 0 0 1px rgba(0,0,0,.6),inset 0 0 0 1px rgba(0,0,0,.35);background:rgba(255,255,255,.04)}

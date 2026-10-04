@@ -14,7 +14,7 @@ let resultFile = null, resultKind = null;
 new ResizeObserver(() => api.setSize($('app').offsetWidth, $('app').offsetHeight)).observe($('app'));
 api.onAnchor(a => { $('app').classList.toggle('right', a.right); $('app').classList.toggle('up', a.bottom); });
 const grip = $('grip');
-grip.addEventListener('pointerdown', e => { grip.setPointerCapture(e.pointerId); api.dragStart(); });
+grip.addEventListener('pointerdown', e => { if (rec) return; grip.setPointerCapture(e.pointerId); api.dragStart(); });
 grip.addEventListener('pointerup', () => api.dragEnd());
 grip.addEventListener('pointercancel', () => api.dragEnd());
 const syncOpen = () => $('app').classList.toggle('open', !$('panel').classList.contains('hidden') || !$('result').classList.contains('hidden'));
@@ -100,8 +100,15 @@ api.onRecStart(async cfg => {
   catch (e) { toast('Could not start: ' + (e && e.message || e)); await teardown(); }
 });
 
+// Moving or resizing any of our topmost windows while the screen is being captured makes Chrome's hardware
+// video (YouTube etc.) drop to white in the capture. So the bar reaches its final recording layout BEFORE
+// capture starts, never changes size while recording (fixed-size slots), and can't be dragged until stop.
+const setBadge = sp => { $('spd').classList.toggle('ghost', sp === 1); $('spd').textContent = sp === 1 ? '' : sp + '×'; };
 async function startRecording({ region, display, settings }) {
   S = settings;
+  show('panel', false); show('result', false); toast(''); show('idle', false); show('recing', true);
+  $('app').classList.add('recording'); $('timer').textContent = '00:00'; setBadge(1); setPaused(false);
+  await new Promise(r => setTimeout(r, 500));
   const fps = S.fps || 30;
   const wantSys = !!S.system;
   const ds = await navigator.mediaDevices.getDisplayMedia({
@@ -190,11 +197,9 @@ async function startRecording({ region, display, settings }) {
   mr.start(1000);
   rec.t0 = performance.now();
   rec.tick = setInterval(updateTimer, 250);
-  speedCb = sp => { if (!rec) return; rec.segs.push({ t: elapsed() / 1000, speed: sp }); show('spd', sp !== 1); $('spd').textContent = sp + '×'; };
-  show('spd', false);
+  speedCb = sp => { if (!rec) return; rec.segs.push({ t: elapsed() / 1000, speed: sp }); setBadge(sp); };
   api.recState(true);
-  show('idle', false); show('recing', true); show('panel', false); show('result', false); toast('');
-  setPaused(false); updateTimer();
+  updateTimer();
 }
 
 function elapsed() { return rec ? rec.acc + (rec.paused ? 0 : performance.now() - rec.t0) : 0; }
@@ -216,11 +221,12 @@ async function stopRecording() {
   rec.stopping = true;
   const r = rec;
   if (r.mr.state !== 'inactive') r.mr.stop();
+  clearInterval(r.timer); r.ds.getTracks().forEach(t => t.stop()); // capture off before any layout change
   r.segs.forEach((s, i) => { s.end = i + 1 < r.segs.length ? r.segs[i + 1].t : null; });
   const total = elapsed() / 1000;
   const segments = r.segs.map(s => ({ start: s.t, end: s.end, speed: s.speed })).filter(s => s.end == null || s.end > s.start);
   r.finishOpts = { segments, hasAudio: r.hasAudio, fps: r.fps, total };
-  if (segments.some(s => s.speed !== 1)) { r.baking = true; ['btnPause', 'btnStop', 'spd', 'dot'].forEach(id => show(id, false)); $('timer').textContent = 'Baking 0%'; }
+  if (segments.some(s => s.speed !== 1)) { r.baking = true; ['btnPause', 'btnStop', 'dot'].forEach(id => show(id, false)); $('spd').classList.add('ghost'); $('timer').textContent = 'Baking 0%'; }
   const result = await r.donePromise;
   await teardown();
   showResult(result);
@@ -231,8 +237,9 @@ async function teardown() {
     rec.ds.getTracks().forEach(t => t.stop()); rec.micStream.forEach(s => s.getTracks().forEach(t => t.stop()));
     try { await rec.ac.close(); } catch { /* ignore */ }
     rec.video.srcObject = null; rec = null; marks.clear(); zoomCb = null; speedCb = null;
-    ['btnPause', 'btnStop', 'dot'].forEach(id => show(id, true)); show('spd', false); api.recState(false);
+    ['btnPause', 'btnStop', 'dot'].forEach(id => show(id, true)); api.recState(false);
   }
+  $('app').classList.remove('recording');
   show('recing', false); show('idle', true);
 }
 
