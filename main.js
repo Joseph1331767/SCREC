@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, screen, desktopCapturer, session, dialog, Tray, Menu, nativeImage, clipboard, shell } = require('electron');
+const { app, globalShortcut, BrowserWindow, ipcMain, screen, desktopCapturer, session, dialog, Tray, Menu, nativeImage, clipboard, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -383,21 +383,39 @@ function setSpeed(n) {
   hud(sp === 1 ? 'Speed normal' : `Speed ${sp}×`);
 }
 
+// Arrows and 1-9 are only acted on (and swallowed, so games/apps never see them) while the chord is held.
+// uiohook can't block keys, but a registered global hotkey is consumed by Windows.
+const ACCEL = { 57419: 'Left', 57421: 'Right', 57416: 'Up', 57424: 'Down' };
+for (let n = 1; n <= 9; n++) ACCEL[n + 1] = String(n);
+const swallow = new Set();
+function act(code) {
+  if (code === K.left || code === K.right || code === K.up || code === K.down) {
+    if (!directing) return;
+    const step = 10;
+    if (code === K.left) off.x -= step; else if (code === K.right) off.x += step;
+    else if (code === K.up) off.y -= step; else off.y += step;
+  } else if (code >= 2 && code <= 10) setSpeed(code - 1);
+}
+function grabKeys() {
+  if (!settings.zoom) return;
+  for (const [code, key] of Object.entries(ACCEL)) {
+    try { if (globalShortcut.register('Ctrl+Alt+Shift+' + key, () => act(+code))) swallow.add(+code); } catch { /* combo taken: key passes through */ }
+  }
+}
+function releaseKeys() { globalShortcut.unregisterAll(); swallow.clear(); }
 const has = g => K[g].some(k => down.has(k));
 const combo = () => has('ctrl') && has('alt') && has('shift');
 const hk = {
   keydown(code) {
     down.add(code);
     if (combo() && !chord) { chord = true; chordTimer = setTimeout(() => { if (chord) enterDirector(); }, 100); }
-    if (!directing || !chord) return;
-    const step = 10;
-    if (code === K.left) off.x -= step; else if (code === K.right) off.x += step;
-    else if (code === K.up) off.y -= step; else if (code === K.down) off.y += step;
-    else if (code >= 2 && code <= 10) setSpeed(code - 1);
+    if (chord && !swallow.size) grabKeys();
+    if (!chord || swallow.has(code)) return; // swallowed keys are handled by their global hotkey
+    act(code);
   },
   keyup(code) {
     down.delete(code);
-    if (chord && !combo()) { chord = false; exitDirector(); }
+    if (chord && !combo()) { chord = false; releaseKeys(); exitDirector(); }
   },
   mousedown(btn) {
     if (!directing) return;
@@ -450,7 +468,7 @@ app.whenReady().then(() => {
   setupDisplayMedia();
   createBar(); createTray(); setupHooks();
   setTimeout(() => checkUpdates(false), 4000);
-  if (process.env.SCREC_SELFTEST) require('./scripts/selftest')({ app, barWin, screen, startSelect, beginVideo, captureImage, ipcMain, hk, screen: screen, getSettings: () => settings });
+  if (process.env.SCREC_SELFTEST) require('./scripts/selftest')({ app, barWin, screen, startSelect, beginVideo, captureImage, ipcMain, hk, act, screen: screen, swallowed: () => [...swallow], getSettings: () => settings });
 });
 app.on('window-all-closed', e => e.preventDefault());
-app.on('will-quit', () => { try { uio && uio.stop(); } catch { /* ignore */ } });
+app.on('will-quit', () => { globalShortcut.unregisterAll(); try { uio && uio.stop(); } catch { /* ignore */ } });

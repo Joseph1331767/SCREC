@@ -3,7 +3,7 @@
 const fs = require('fs');
 const { spawn } = require('child_process');
 
-module.exports = ({ app, barWin, screen, captureImage, beginVideo, hk }) => {
+module.exports = ({ app, barWin, screen, captureImage, beginVideo, hk, act, swallowed }) => {
   const d = screen.getPrimaryDisplay();
   const sf = d.scaleFactor;
   const log = m => console.log('[selftest]', m);
@@ -22,21 +22,21 @@ module.exports = ({ app, barWin, screen, captureImage, beginVideo, hk }) => {
     await beginVideo(d, region); log('recording started');
     await sleep(2500);                                   // 0-2.5s  plain, normal speed
     move(700, 450); await sleep(200);
-    [29, 56, 42].forEach(c => hk.keydown(c)); await sleep(400); log('chord held, box visible');
+    [29, 56, 42].forEach(c => hk.keydown(c)); await sleep(400); log('chord held, box visible; swallowed keys: ' + swallowed().length);
     await sleep(1200);                                   // aim box without LMB (not zoomed)
     hk.mousedown(1); log('LMB: zoom engaged');
     await glide(700, 450, 1200, 600, 1800);              // box follows mouse, video zoomed
     hk.wheel(-1); await sleep(900);                      // zoom amount up
-    hk.keydown(57421); hk.keyup(57421); hk.keydown(57421); hk.keyup(57421); await sleep(600); // nudge
+    act(57421); act(57421); await sleep(600); // nudge
     hk.mousedown(2);                                     // RMB draw
     for (let a = 0; a <= 6.4; a += 0.2) { move(1200 + 120 * Math.cos(a), 600 + 90 * Math.sin(a)); await sleep(40); }
     hk.mouseup(2); await sleep(600);
     hk.mousedown(2); await sleep(80); hk.mouseup(2); log('beacon tap'); await sleep(1500);
     hk.mouseup(1); log('LMB released: zoom out'); await sleep(1500);
-    hk.keydown(10); log('speed 9'); await sleep(2500);   // 4x for ~2.5s
-    hk.keydown(2); log('speed 1'); await sleep(1500);    // 0.25x for ~1.5s
-    hk.keydown(6); log('speed 5'); await sleep(2000);    // normal
-    [29, 56, 42].forEach(c => hk.keyup(c)); await sleep(1500);
+    act(10); log('speed 9'); await sleep(2500);   // 4x for ~2.5s
+    act(2); log('speed 1'); await sleep(1500);    // 0.25x for ~1.5s
+    act(6); log('speed 5'); await sleep(2000);    // normal
+    [29, 56, 42].forEach(c => hk.keyup(c)); await sleep(500); log('after release, swallowed keys: ' + swallowed().length + ', gs registered: ' + require('electron').globalShortcut.isRegistered('Ctrl+Alt+Shift+5')); await sleep(1000);
     await barWin.webContents.executeJavaScript("document.getElementById('btnStop').click()");
     await sleep(25000);
     log('files: ' + fs.readdirSync(app.getPath('videos') + '/SCREC').join(', '));
