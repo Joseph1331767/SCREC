@@ -50,6 +50,7 @@
       "signAndEditExecutable": false
     },
     "nsis": {
+      "artifactName": "SCREC-Setup-${version}.exe",
       "oneClick": true,
       "perMachine": false,
       "runAfterFinish": true,
