@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('api', {
   recOpen: ext => ipcRenderer.invoke('rec:open', ext),
   recChunk: buf => ipcRenderer.invoke('rec:chunk', buf),
   recFinish: o => ipcRenderer.invoke('rec:finish', o),
+  recCapturing: () => ipcRenderer.send('rec:capturing'),
   recState: r => ipcRenderer.send('rec:state', r),
   onSpeed: fn => on('speed:set', fn),
   onSettingsChanged: fn => on('settings:changed', fn),

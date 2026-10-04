@@ -52,6 +52,7 @@ function bake(file, segments, { hasAudio, fps }, onProgress) {
 
   return new Promise((resolve, reject) => {
     const p = spawn(ffmpegPath(), args, { windowsHide: true });
+    try { require('os').setPriority(p.pid, require('os').constants.priority.PRIORITY_BELOW_NORMAL); } catch { /* ignore */ } // don't starve a game running meanwhile
     let err = '';
     p.stdout.on('data', d => {
       const m = /out_time_us=(\d+)/.exec(String(d));

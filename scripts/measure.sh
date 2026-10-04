@@ -9,7 +9,7 @@
 #   env      CHROMEURL   page to play (default: YouTube Big Buck Bunny; local pattern:
 #                        C:/Users/Drope/AppData/Local/Temp/pb/bright.mp4 -- mean ~131 when healthy)
 #            SCREC_NOCHORD=1  (selftest) skip holding the chord entirely = control run
-#            any other VAR=value pairs given as extra args are exported for the app (e.g. SCREC_KEEPBAR=1)
+#            any other VAR=value pairs given as extra args are exported for the app (e.g. SCREC_NOCHORD=1)
 #
 # Verdict (meaningful for steps=none / nochord, where nothing should change the picture):
 #   GLITCH  if any sample after the 4th second is >=225 (video area went white) or <=25 (black)

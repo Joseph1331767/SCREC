@@ -13,6 +13,7 @@ let resultFile = null, resultKind = null;
 // ---------- layout ----------
 new ResizeObserver(() => api.setSize($('app').offsetWidth, $('app').offsetHeight)).observe($('app'));
 api.onAnchor(a => { $('app').classList.toggle('right', a.right); $('app').classList.toggle('up', a.bottom); });
+$('panel').style.maxHeight = Math.max(200, Math.floor(screen.availHeight * 0.85) - 70) + 'px';
 const grip = $('grip');
 grip.addEventListener('pointerdown', e => { if (rec) return; grip.setPointerCapture(e.pointerId); api.dragStart(); });
 grip.addEventListener('pointerup', () => api.dragEnd());
@@ -68,19 +69,20 @@ async function listMics() {
   const real = all.filter(d => d.deviceId !== 'default' && d.deviceId !== 'communications');
   return real.length ? real : all;
 }
-function pickMic(devs) {
-  if (S.micDevice && S.micDevice !== 'auto') {
+function pickMic(devs, ignoreChoice) {
+  if (!ignoreChoice && S.micDevice && S.micDevice !== 'auto') {
     const m = devs.find(d => d.label === S.micDevice);
     if (m) return m;
   }
   let best = null, bs = 0;
   for (const d of devs) { const s = micScore(d.label); if (s > bs) { bs = s; best = d; } }
-  return best || devs[0] || null;
+  // never fall back to a loopback/virtual device (Stereo Mix would double the device audio already recorded)
+  return best || devs.find(d => micScore(d.label) >= 0) || devs[0] || null;
 }
 async function fillMics() {
   const devs = await listMics();
   const sel = $('sMic'); sel.innerHTML = '';
-  const auto = pickMic(devs && S.micDevice === 'auto' ? devs : devs);
+  const auto = pickMic(devs, true);
   sel.add(new Option('Auto' + (auto ? ' — ' + auto.label : ''), 'auto'));
   for (const d of devs) sel.add(new Option(d.label, d.label));
   sel.value = devs.some(d => d.label === S.micDevice) ? S.micDevice : 'auto';
@@ -111,6 +113,7 @@ async function startRecording({ region, display, settings }) {
   await new Promise(r => setTimeout(r, 500));
   const fps = S.fps || 30;
   const wantSys = !!S.system;
+  api.recCapturing(); // from here main refuses to move/resize the bar (capture is starting)
   const ds = await navigator.mediaDevices.getDisplayMedia({
     video: { frameRate: { ideal: fps, max: fps }, width: { ideal: Math.round(display.width * display.scale) }, height: { ideal: Math.round(display.height * display.scale) } },
     audio: wantSys,
@@ -170,7 +173,7 @@ async function startRecording({ region, display, settings }) {
   // audio mix
   const ac = new AudioContext();
   const dest = ac.createMediaStreamDestination();
-  let nAudio = 0; const micStream = [];
+  let nAudio = 0, warn = ''; const micStream = [];
   const sysTracks = ds.getAudioTracks();
   if (sysTracks.length) { ac.createMediaStreamSource(new MediaStream(sysTracks)).connect(dest); nAudio++; }
   if (S.mic) {
@@ -178,7 +181,7 @@ async function startRecording({ region, display, settings }) {
       const mic = pickMic(await listMics());
       const ms = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: mic ? { exact: mic.deviceId } : undefined, echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
       micStream.push(ms); ac.createMediaStreamSource(ms).connect(dest); nAudio++;
-    } catch (e) { toast('Mic unavailable: ' + e.message); }
+    } catch (e) { warn = 'Mic unavailable: ' + e.message; } // shown after stop: a toast now would resize the bar mid-capture
   }
   const out = new MediaStream([vtrack, ...(nAudio ? dest.stream.getAudioTracks() : [])]);
 
@@ -190,7 +193,7 @@ async function startRecording({ region, display, settings }) {
   let chain = Promise.resolve();
   mr.ondataavailable = e => { if (e.data.size) chain = chain.then(async () => api.recChunk(await e.data.arrayBuffer())); };
 
-  rec = { hasAudio: nAudio > 0, fps, segs: [{ t: 0, speed: 1 }], mr, ds, video, timer, ac, micStream, canvas, ext, t0: 0, acc: 0, paused: false, tick: null, info: { w: ow, h: oh, k } };
+  rec = { warn, hasAudio: nAudio > 0, fps, segs: [{ t: 0, speed: 1 }], mr, ds, video, timer, ac, micStream, canvas, ext, t0: 0, acc: 0, paused: false, tick: null, info: { w: ow, h: oh, k } };
   rec.donePromise = new Promise(res => { mr.onstop = async () => { await chain; res(await api.recFinish(rec.finishOpts)); }; });
   // stop if the capture source dies
   ds.getVideoTracks()[0].onended = () => stopRecording();
@@ -230,6 +233,7 @@ async function stopRecording() {
   const result = await r.donePromise;
   await teardown();
   showResult(result);
+  if (r.warn) toast(r.warn);
 }
 async function teardown() {
   if (rec) {
@@ -237,8 +241,9 @@ async function teardown() {
     rec.ds.getTracks().forEach(t => t.stop()); rec.micStream.forEach(s => s.getTracks().forEach(t => t.stop()));
     try { await rec.ac.close(); } catch { /* ignore */ }
     rec.video.srcObject = null; rec = null; marks.clear(); zoomCb = null; speedCb = null;
-    ['btnPause', 'btnStop', 'dot'].forEach(id => show(id, true)); api.recState(false);
+    ['btnPause', 'btnStop', 'dot'].forEach(id => show(id, true));
   }
+  api.recState(false); // also when start-up failed before `rec` existed, so main stops guarding the bar
   $('app').classList.remove('recording');
   show('recing', false); show('idle', true);
 }

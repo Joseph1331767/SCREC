@@ -64,7 +64,7 @@ module.exports = ({ app, barWin, screen, captureImage, beginVideo, hk, act, swal
     await beginVideo(d, region); log('recording started');
     await sleep(2500);
     move(700, 450); await sleep(200);
-    if (!process.env.SCREC_NOCHORD && !(process.env.SCREC_STEPS || '').startsWith('rawclick')) await chordDown(); await sleep(500); log('chord held; swallowed keys: ' + swallowed().length);
+    if (!process.env.SCREC_NOCHORD && !(process.env.SCREC_STEPS || '').startsWith('rawclick')) await chordDown(); await sleep(500); log('chord held; swallowed keys/buttons: ' + swallowed());
     await sleep(1200);
     const steps = (process.env.SCREC_STEPS || 'lmb,wheel,arrow,draw,beacon,digits').split(',');
     const on = s => steps.includes(s);
@@ -86,7 +86,7 @@ module.exports = ({ app, barWin, screen, captureImage, beginVideo, hk, act, swal
     if (!steps.some(s => s !== 'none')) await sleep(1000);
     await sleep(1500);
     await chordUp(); await sleep(500);
-    log('after release, swallowed keys: ' + swallowed().length);
+    log('after release, swallowed keys/buttons: ' + swallowed());
     await sleep(6000); // watch for lingering damage (white/black video)
     await stop();
     await sleep(12000);

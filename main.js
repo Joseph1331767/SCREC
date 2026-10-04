@@ -3,7 +3,8 @@ const path = require('path');
 const fs = require('fs');
 
 if (process.env.SCREC_SELFTEST) app.setPath('userData', path.join(app.getPath('temp'), 'screc-selftest'));
-if (!app.requestSingleInstanceLock()) { app.quit(); }
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) app.quit();
 
 const defaults = {
   saveDir: path.join(app.getPath('videos'), 'SCREC'),
@@ -39,6 +40,7 @@ let barWin = null, tray = null;
 let selectWins = [];
 let pendingDisplayId = null, pendingSystemAudio = false;
 let recStream = null, recPath = null;
+let capturing = false; // getDisplayMedia has been requested: from here on our topmost windows must not move or resize
 let selectKind = null;
 
 const preload = path.join(__dirname, 'preload.js');
@@ -74,7 +76,7 @@ function createBar() {
 
 // Window size follows the content. It grows away from the nearest screen edge so the bar itself never jumps.
 ipcMain.on('bar:size', (_e, w, h) => {
-  if (recRegion) return; // never resize while the screen is being captured (see bar.js)
+  if (recRegion || capturing) return; // never resize while the screen is being captured (see bar.js)
   if (!barWin) return;
   w = Math.ceil(w); h = Math.ceil(h);
   const b = barWin.getBounds();
@@ -90,7 +92,7 @@ ipcMain.on('bar:size', (_e, w, h) => {
 // Manual drag so we can snap to screen edges when released.
 let drag = null;
 ipcMain.on('bar:dragStart', () => {
-  if (!barWin || drag || recRegion) return;
+  if (!barWin || drag || recRegion || capturing) return;
   const p = screen.getCursorScreenPoint(), b = barWin.getBounds();
   drag = { dx: p.x - b.x, dy: p.y - b.y, w: b.width, h: b.height };
   drag.t = setInterval(() => {
@@ -195,6 +197,7 @@ async function beginVideo(display, rect) {
   pendingDisplayId = String(display.id);
   pendingSystemAudio = !!settings.system;
   pendingRegion = { x: display.bounds.x + rect.x, y: display.bounds.y + rect.y, width: rect.width, height: rect.height };
+  if (!directing) ensureOverlay(display); // build the overlay now, not in the middle of the capture
   barWin.show();
   toBar('rec:start', {
     region: { x: display.bounds.x + rect.x, y: display.bounds.y + rect.y, width: rect.width, height: rect.height },
@@ -276,12 +279,13 @@ ipcMain.on('file:copyPath', (_e, f) => clipboard.writeText(f));
 // ---------- director hotkeys (hold Ctrl+Alt+Shift) ----------
 // While the chord is held: a viewport box follows the mouse (wheel = zoom amount, arrows = nudge),
 // LMB held = recording zooms into the box, RMB = annotate (tap = beacon), 1-9 = baked playback speed.
-// The box/HUD window is excluded from capture; the annotation window is not, so viewers see marks.
-// (Window exclusion only works on windows that are NOT click-through, so overlays catch input while shown.)
+// ONE overlay window holds the box, HUD and live marks; it is excluded from capture and the recorder paints the
+// marks into the video itself, so viewers see the zoom and marks but never the aim box/HUD.
+// (setIgnoreMouseEvents would silently disable the exclusion; input is swallowed by hooks.js instead.)
 const SPEEDS = [0.25, 0.4, 0.6, 0.8, 1, 1.5, 2, 3, 4];
 const K = { ctrl: [29, 3613], alt: [56, 3640], shift: [42, 54], left: 57419, right: 57421, up: 57416, down: 57424 };
 const down = new Set();
-let chord = false, chordTimer = null, directing = false, dirTimer = null;
+let chord = false, chordTimer = null, directing = false, dirTimer = null, pendingUnhook = false;
 let overlayDisplay = null, ovWin = null, barHidden = false;
 let lmb = false, rmb = false, rmbTimer = null, rmbLast = null;
 let off = { x: 0, y: 0 };
@@ -292,7 +296,6 @@ let recRegion = null, pendingRegion = null;
 // painting video (YouTube goes white until clicked) and the capture of that video plane breaks.
 let _koffi = null;
 function markTransparent(win) {
-  if (process.env.SCREC_NOEX) return;
   try {
     if (!_koffi) {
       const koffi = require('koffi'), u = koffi.load('user32.dll');
@@ -306,8 +309,13 @@ function markTransparent(win) {
 // ONE overlay window only. Two stacked topmost windows over hardware video (e.g. YouTube in Chrome) make
 // Windows screen capture go black / the video go white, so box, HUD and live marks all live in this window,
 // it is excluded from capture, and the recorder paints the marks into the video itself.
+const sameDisplay = (a, b) => !!a && !!b && a.id === b.id && a.scaleFactor === b.scaleFactor &&
+  ['x', 'y', 'width', 'height'].every(k => a.bounds[k] === b.bounds[k]);
+// While recording a region the overlay belongs on the recorded display (the box is clamped to that region).
+const pickDisplay = () => (recRegion ? screen.getDisplayMatching(recRegion) : screen.getDisplayNearestPoint(screen.getCursorScreenPoint()));
 function ensureOverlay(d) {
-  if (ovWin && !ovWin.isDestroyed() && overlayDisplay && overlayDisplay.id === d.id) return;
+  // also re-create when the display's size/position/DPI changed (game resolution switch, docking), not only its id
+  if (ovWin && !ovWin.isDestroyed() && sameDisplay(overlayDisplay, d)) return;
   if (ovWin && !ovWin.isDestroyed()) ovWin.destroy();
   overlayDisplay = d;
   ovWin = new BrowserWindow({
@@ -341,18 +349,26 @@ function directTick() {
   sendBox('box', { x: box.x - d.bounds.x, y: box.y - d.bounds.y, width: box.width, height: box.height, active: lmb, level: settings.zoomLevel || 2 });
   if (recRegion) toBar('zoom:state', { active: lmb, box });
 }
-const hud = text => { if (!process.env.SCREC_NOHUD) sendBox('hud', text); };
+const hud = text => sendBox('hud', text);
 
 function enterDirector() {
   if (!settings.zoom || directing) return;
   directing = true;
-  const d = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
-  ensureOverlay(d);
-  if (!process.env.SCREC_KEEPBAR && barWin && barWin.isVisible()) { barWin.hide(); barHidden = true; } // keep to a single window over the screen
-  off = { x: 0, y: 0 };
-  ovWin.showInactive();
-  directTick();
-  dirTimer = setInterval(directTick, 8);
+  try {
+    ensureOverlay(pickDisplay());
+    if (barWin && barWin.isVisible()) { barWin.hide(); barHidden = true; } // keep to a single window over the screen
+    off = { x: 0, y: 0 };
+    ovWin.showInactive();
+    directTick();
+    clearInterval(dirTimer);
+    dirTimer = setInterval(directTick, 8);
+  } catch (e) { // never leave a half-entered director behind (no timer, no overlay, bar hidden)
+    console.error('director failed to start', e);
+    directing = false; clearInterval(dirTimer); dirTimer = null;
+    try { if (ovWin && !ovWin.isDestroyed()) ovWin.hide(); } catch { /* ignore */ }
+    if (barHidden && barWin && !barWin.isDestroyed()) barWin.showInactive();
+    barHidden = false;
+  }
 }
 function exitDirector() {
   clearTimeout(chordTimer);
@@ -385,7 +401,8 @@ function endStroke() {
 
 function setLevel(delta) {
   settings.zoomLevel = Math.min(6, Math.max(1.25, Math.round(((settings.zoomLevel || 2) + delta) * 4) / 4));
-  saveSettings(); toBar('settings:changed', settings);
+  clearTimeout(setLevel.t); setLevel.t = setTimeout(saveSettings, 400); // not synchronous: we are inside a hook callback
+  toBar('settings:changed', settings);
   hud(`Zoom ${settings.zoomLevel}×`);
 }
 function setSpeed(n) {
@@ -407,20 +424,69 @@ function act(code) {
     else if (code === K.up) off.y -= step; else off.y += step;
   } else if (code >= 2 && code <= 10) setSpeed(code - 1);
 }
+const MODS = ['ctrl', 'alt', 'shift'];
 const has = g => K[g].some(k => down.has(k));
-const combo = () => has('ctrl') && has('alt') && has('shift');
+const combo = () => MODS.every(has);
 const heldKeys = new Set(), heldButtons = new Set(); // swallowed DOWNs, so the matching UP is swallowed too
+
+// The OS's real modifier state (null = unknown: hooks unavailable, or the selftest driving hk directly).
+const selftestSynthetic = !!process.env.SCREC_SELFTEST && !process.env.SCREC_SELFTEST_REAL;
+function physMods() {
+  if (selftestSynthetic || !hooks) return null;
+  try { return hooks.mods(); } catch { return null; }
+}
+// Hook events can be lost (secure desktop, UAC, Win+L, a hook timeout). Forget modifiers the keyboard no longer
+// holds, so a stale entry can never combine with one fresh key press into a false chord. `except` = key being pressed
+// right now (its physical state is not updated yet while its own hook callback runs).
+function dropStaleMods(except) {
+  const p = physMods(); if (!p) return;
+  for (const g of MODS) if (!p[g] && !K[g].includes(except)) K[g].forEach(k => down.delete(k));
+}
+// Chord over: drop the mouse hook, but only after every swallowed button has come up (else its UP would leak
+// to the app under the cursor, e.g. an orphan right-button-up pops a context menu).
+function endMouse() {
+  if (heldButtons.size) { pendingUnhook = true; return; }
+  pendingUnhook = false;
+  if (hooks) hooks.stopMouse();
+}
+function forceRelease(why) {
+  console.error('chord force-released:', why);
+  chord = false; dropStaleMods(-1); heldKeys.clear();
+  endMouse();
+  exitDirector();
+}
+// Watchdog: the real keyboard/mouse state is the source of truth for the chord.
+let badTicks = 0, idleTicks = 0;
+function watchdog() {
+  const p = chord ? physMods() : null; // idle: no polling at all
+  if (chord && p && !(p.ctrl && p.alt && p.shift)) { if (++badTicks >= 2) { badTicks = 0; forceRelease('modifier released without a key-up'); } } else badTicks = 0;
+  if (pendingUnhook && hooks) { // a swallowed button whose UP never arrived (it is physically up) must not keep the hook alive
+    if (!hooks.buttonsDown()) { if (++idleTicks >= 2) { idleTicks = 0; heldButtons.clear(); pendingUnhook = false; hooks.stopMouse(); } } else idleTicks = 0;
+  } else idleTicks = 0;
+}
+
 // Each handler returns true when the event must be swallowed.
 const hk = {
   keydown(code) {
+    const fresh = !down.has(code); // first DOWN of this physical press (auto-repeats are not fresh)
     down.add(code);
-    if (combo() && !chord) { chord = true; if (settings.zoom && hooks) hooks.startMouse(); chordTimer = setTimeout(() => { if (chord) enterDirector(); }, 100); }
-    if (!chord || !settings.zoom || !ACT_KEYS.has(code)) return false;
-    heldKeys.add(code); act(code); return true;
+    if (!chord && combo()) dropStaleMods(code);
+    if (combo() && !chord) { chord = true; pendingUnhook = false; if (settings.zoom && hooks) hooks.startMouse(); chordTimer = setTimeout(() => { if (chord) enterDirector(); }, 100); }
+    if (!ACT_KEYS.has(code)) return false;
+    // Decide once per press: a key whose first DOWN reached the app is never swallowed (neither repeats nor the UP),
+    // a key whose first DOWN was swallowed stays swallowed until its UP, even if the chord ends first. Both halves
+    // of a press go to the same place, so nothing ever sticks.
+    if (fresh) { if (chord && settings.zoom) heldKeys.add(code); else heldKeys.delete(code); }
+    if (!heldKeys.has(code)) return false;
+    if (chord) act(code);
+    return true;
   },
   keyup(code) {
     down.delete(code);
-    if (chord && !combo()) { chord = false; if (hooks) hooks.stopMouse(); exitDirector(); }
+    if (chord && !combo()) {
+      chord = false; endMouse();
+      setImmediate(() => { if (!chord) exitDirector(); }); // keep window work out of the hook callback (hook timeout)
+    }
     return heldKeys.delete(code);
   },
   mousedown(btn) {
@@ -432,13 +498,18 @@ const hk = {
   mouseup(btn) {
     if (btn === 1 && lmb) { lmb = false; if (recRegion) toBar('zoom:state', { active: false, box: null }); }
     else if (btn === 2) endStroke();
-    return heldButtons.delete(btn);
+    const swallow = heldButtons.delete(btn);
+    if (pendingUnhook && !heldButtons.size) setImmediate(() => { if (pendingUnhook && !heldButtons.size) { pendingUnhook = false; if (hooks) hooks.stopMouse(); } });
+    return swallow;
   },
   wheel(rotation) { if (!directing || !rotation || !settings.zoom) return false; setLevel(rotation < 0 ? 0.25 : -0.25); return true; },
+  hwheel() { return directing && settings.zoom; },
 };
 
+ipcMain.on('rec:capturing', () => { capturing = true; });
 ipcMain.on('rec:state', (_e, recording) => {
   recRegion = recording ? pendingRegion : null;
+  capturing = false; // recRegion takes over as the gate while recording
   if (!recording) toBar('zoom:state', { active: false, box: null });
 });
 
@@ -452,13 +523,16 @@ function setupHooks() {
       onKey: (vk, isDown) => { const c = VK[vk]; return c == null ? false : (isDown ? hk.keydown(c) : hk.keyup(c)); },
       onButton: (btn, isDown) => (isDown ? hk.mousedown(btn) : hk.mouseup(btn)),
       onWheel: delta => hk.wheel(-delta),
+      onHWheel: () => hk.hwheel(),
     });
   } catch (e) { console.error('input hooks unavailable', e); }
-  setTimeout(() => ensureOverlay(screen.getPrimaryDisplay()), 2500); // pre-warm so the first press is instant
+  setInterval(watchdog, 150);
+  setTimeout(() => { if (!directing) ensureOverlay(pickDisplay()); }, 2500); // pre-warm so the first press is instant
 }
 
 // ---------- updates ----------
 function checkUpdates(manual) {
+  checkUpdates.manual = !!manual; // background checks only speak up when they find an update
   if (!app.isPackaged) { if (manual) toBar('update', { state: 'dev' }); return; }
   try {
     const { autoUpdater } = require('electron-updater');
@@ -466,22 +540,23 @@ function checkUpdates(manual) {
       checkUpdates.wired = true;
       autoUpdater.autoDownload = true;
       autoUpdater.on('update-available', i => toBar('update', { state: 'downloading', version: i.version }));
-      autoUpdater.on('update-not-available', () => toBar('update', { state: 'none' }));
+      autoUpdater.on('update-not-available', () => { if (checkUpdates.manual) toBar('update', { state: 'none' }); });
       autoUpdater.on('update-downloaded', i => toBar('update', { state: 'ready', version: i.version }));
-      autoUpdater.on('error', e => toBar('update', { state: 'error', message: String(e && e.message || e) }));
+      autoUpdater.on('error', e => { if (checkUpdates.manual) toBar('update', { state: 'error', message: String(e && e.message || e) }); });
     }
     autoUpdater.checkForUpdates().catch(() => {});
-  } catch (e) { toBar('update', { state: 'error', message: String(e.message || e) }); }
+  } catch (e) { if (manual) toBar('update', { state: 'error', message: String(e.message || e) }); }
 }
 
 // ---------- boot ----------
 app.on('second-instance', () => { if (barWin) barWin.show(); });
 app.whenReady().then(() => {
+  if (!gotLock) return; // a second launch: do nothing (no windows, no hooks) while it quits
   loadSettings(); applyStartup();
   setupDisplayMedia();
   createBar(); createTray(); setupHooks();
   setTimeout(() => checkUpdates(false), 4000);
-  if (process.env.SCREC_SELFTEST) require('./scripts/selftest')({ app, barWin, screen, startSelect, beginVideo, captureImage, ipcMain, hk, act, screen: screen, swallowed: () => heldKeys.size + heldButtons.size, getSettings: () => settings });
+  if (process.env.SCREC_SELFTEST) require('./scripts/selftest')({ app, barWin, screen, startSelect, beginVideo, captureImage, ipcMain, hk, act, swallowed: () => heldKeys.size + heldButtons.size, getSettings: () => settings });
 });
 app.on('window-all-closed', e => e.preventDefault());
-app.on('will-quit', () => { try { hooks && hooks.stop(); } catch { /* ignore */ } });
+app.on('will-quit', () => { try { hooks && hooks.stop(); } catch { /* ignore */ } if (setLevel.t) { clearTimeout(setLevel.t); saveSettings(); } });
