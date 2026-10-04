@@ -282,35 +282,31 @@ const K = { ctrl: [29, 3613], alt: [56, 3640], shift: [42, 54], left: 57419, rig
 const down = new Set();
 let uio = null;
 let chord = false, chordTimer = null, directing = false, dirTimer = null;
-let overlayDisplay = null, boxWin = null, annoWin = null;
+let overlayDisplay = null, ovWin = null, barHidden = false;
 let lmb = false, rmb = false, rmbTimer = null, rmbLast = null;
 let off = { x: 0, y: 0 };
 let recRegion = null, pendingRegion = null;
 
-function mkOverlay(d, file, protect) {
-  const w = new BrowserWindow({
+// ONE overlay window only. Two stacked topmost windows over hardware video (e.g. YouTube in Chrome) make
+// Windows screen capture go black / the video go white, so box, HUD and live marks all live in this window,
+// it is excluded from capture, and the recorder paints the marks into the video itself.
+function ensureOverlay(d) {
+  if (ovWin && !ovWin.isDestroyed() && overlayDisplay && overlayDisplay.id === d.id) return;
+  if (ovWin && !ovWin.isDestroyed()) ovWin.destroy();
+  overlayDisplay = d;
+  ovWin = new BrowserWindow({
     x: d.bounds.x, y: d.bounds.y, width: d.bounds.width, height: d.bounds.height,
     frame: false, transparent: true, alwaysOnTop: true, skipTaskbar: true, resizable: false, movable: false,
     focusable: false, fullscreenable: false, hasShadow: false, show: false, backgroundColor: '#00000000',
     webPreferences: { preload, backgroundThrottling: false },
   });
-  w.setAlwaysOnTop(true, 'screen-saver');
-  if (protect) w.setContentProtection(true);
-  w.loadFile(path.join(__dirname, 'renderer', file));
-  w.webContents.once('did-finish-load', () => w.webContents.send('overlay:init', { x: d.bounds.x, y: d.bounds.y, width: d.bounds.width, height: d.bounds.height }));
-  return w;
+  ovWin.setAlwaysOnTop(true, 'screen-saver');
+  ovWin.setContentProtection(true); // must NOT be click-through, or exclusion silently stops working
+  ovWin.loadFile(path.join(__dirname, 'renderer', 'overlay.html'));
+  ovWin.webContents.once('did-finish-load', () => ovWin.webContents.send('overlay:init', { x: d.bounds.x, y: d.bounds.y, width: d.bounds.width, height: d.bounds.height }));
 }
-function ensureOverlays(d) {
-  const alive = w => w && !w.isDestroyed();
-  if (alive(boxWin) && alive(annoWin) && overlayDisplay && overlayDisplay.id === d.id) return;
-  if (alive(boxWin)) boxWin.destroy();
-  if (alive(annoWin)) annoWin.destroy();
-  overlayDisplay = d;
-  boxWin = mkOverlay(d, 'box.html', true);
-  annoWin = mkOverlay(d, 'anno.html', false);
-}
-const sendBox = (ch, msg) => { if (boxWin && !boxWin.isDestroyed()) boxWin.webContents.send(ch, msg); };
-const sendAnno = msg => { if (annoWin && !annoWin.isDestroyed()) annoWin.webContents.send('anno', msg); };
+const sendBox = (ch, msg) => { if (ovWin && !ovWin.isDestroyed()) ovWin.webContents.send(ch, msg); };
+const sendAnno = msg => { sendBox('anno', msg); if (recRegion) toBar('anno', msg); };
 
 function viewBounds() { return recRegion || overlayDisplay.bounds; }
 function computeBox() {
@@ -334,10 +330,10 @@ function enterDirector() {
   if (!settings.zoom || directing) return;
   directing = true;
   const d = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
-  ensureOverlays(d);
+  ensureOverlay(d);
+  if (barWin && barWin.isVisible()) { barWin.hide(); barHidden = true; } // keep to a single window over the screen
   off = { x: 0, y: 0 };
-  annoWin.setIgnoreMouseEvents(false);
-  boxWin.showInactive(); annoWin.showInactive();
+  ovWin.showInactive();
   directTick();
   dirTimer = setInterval(directTick, 8);
 }
@@ -348,10 +344,9 @@ function exitDirector() {
   clearInterval(dirTimer); dirTimer = null;
   if (lmb) { lmb = false; if (recRegion) toBar('zoom:state', { active: false, box: null }); }
   endStroke();
-  if (boxWin && !boxWin.isDestroyed()) boxWin.hide();
-  if (annoWin && !annoWin.isDestroyed()) { annoWin.setIgnoreMouseEvents(true); sendAnno({ type: 'probe' }); }
+  if (ovWin && !ovWin.isDestroyed()) { ovWin.webContents.send('anno', { type: 'reset' }); ovWin.hide(); }
+  if (barHidden && barWin && !barWin.isDestroyed()) { barWin.showInactive(); } barHidden = false;
 }
-ipcMain.on('anno:empty', () => { if (!directing && annoWin && !annoWin.isDestroyed()) annoWin.hide(); });
 
 function startStroke() {
   if (rmb || !directing) return;
@@ -441,7 +436,7 @@ function setupHooks() {
   uio.on('mouseup', e => hk.mouseup(e.button));
   uio.on('wheel', e => hk.wheel(e.rotation));
   uio.start();
-  setTimeout(() => ensureOverlays(screen.getPrimaryDisplay()), 2500); // pre-warm so the first press is instant
+  setTimeout(() => ensureOverlay(screen.getPrimaryDisplay()), 2500); // pre-warm so the first press is instant
 }
 
 // ---------- updates ----------

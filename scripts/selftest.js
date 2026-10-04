@@ -15,6 +15,11 @@ module.exports = ({ app, barWin, screen, captureImage, beginVideo, hk, act, swal
   const key = async (c, hold = 80) => { hk.keydown(c); await sleep(hold); hk.keyup(c); };
 
   (async () => {
+    let chrome = null;
+    if (process.env.SCREC_SELFTEST_CHROME) { // bright hardware-decoded video under the recording, like a YouTube test
+      chrome = spawn('C:/Program Files/Google/Chrome/Application/chrome.exe', ['--user-data-dir=' + require('path').join(app.getPath('temp'), 'st-chrome'), '--no-first-run', '--app=file:///' + process.env.SCREC_SELFTEST_CHROME, '--window-position=0,0', '--window-size=1700,1000', '--autoplay-policy=no-user-gesture-required']);
+      await sleep(4000);
+    }
     await sleep(3000);
     log(`display ${d.bounds.width}x${d.bounds.height} scale ${sf}`);
     const region = { x: 200, y: 150, width: 1600, height: 900 };
@@ -40,6 +45,6 @@ module.exports = ({ app, barWin, screen, captureImage, beginVideo, hk, act, swal
     await barWin.webContents.executeJavaScript("document.getElementById('btnStop').click()");
     await sleep(25000);
     log('files: ' + fs.readdirSync(app.getPath('videos') + '/SCREC').join(', '));
-    ps.kill(); app.quit();
+    ps.kill(); if (chrome) { chrome.kill(); try { require('child_process').execSync('taskkill /F /FI "WINDOWTITLE eq bright*"', { stdio: 'ignore' }); } catch {} } app.quit();
   })().catch(e => { console.error('[selftest] FAILED', e); app.quit(); });
 };

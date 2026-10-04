@@ -39,5 +39,4 @@ contextBridge.exposeInMainWorld('api', {
   onBox: fn => on('box', fn),
   onHud: fn => on('hud', fn),
   onAnno: fn => on('anno', fn),
-  annoEmpty: () => ipcRenderer.send('anno:empty'),
 });

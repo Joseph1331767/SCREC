@@ -1,5 +1,6 @@
 <!doctype html><html><head><meta charset="utf-8"><style>
 html,body{margin:0;height:100%;overflow:hidden;background:transparent;font:600 13px system-ui,"Segoe UI",sans-serif}
+canvas{position:fixed;inset:0}
 #box{position:fixed;display:none;box-sizing:border-box;border:2px dashed rgba(255,255,255,.95);
   box-shadow:0 0 0 1px rgba(0,0,0,.6),inset 0 0 0 1px rgba(0,0,0,.35);background:rgba(255,255,255,.04)}
 #box.active{border:3px solid #ef4444;background:rgba(239,68,68,.07)}
@@ -8,9 +9,19 @@ html,body{margin:0;height:100%;overflow:hidden;background:transparent;font:600 1
   padding:7px 16px;border-radius:9px;font-size:15px;opacity:0;transition:opacity .15s}
 #hud.on{opacity:1}
 </style></head><body>
-<div id="box"><div id="lbl"></div></div><div id="hud"></div>
+<!-- The single on-screen overlay for the hotkey mode: viewport box + HUD + live marks.
+     Excluded from capture (the recorder paints marks into the video itself). -->
+<canvas id="c"></canvas><div id="box"><div id="lbl"></div></div><div id="hud"></div>
+<script src="marks.js"></script>
 <script>
 const box = document.getElementById('box'), lbl = document.getElementById('lbl'), hudEl = document.getElementById('hud');
+const c = document.getElementById('c'), ctx = c.getContext('2d'), dpr = window.devicePixelRatio || 1;
+const marks = new Marks();
+let origin = { x: 0, y: 0 }, raf = 0;
+function size() { c.width = innerWidth * dpr; c.height = innerHeight * dpr; }
+size(); addEventListener('resize', size);
+api.onOverlayInit(o => { origin = o; });
+
 api.onBox(b => {
   box.style.display = 'block';
   box.style.left = b.x + 'px'; box.style.top = b.y + 'px'; box.style.width = b.width + 'px'; box.style.height = b.height + 'px';
@@ -20,4 +31,11 @@ api.onBox(b => {
 });
 let t = 0;
 api.onHud(text => { hudEl.textContent = text; hudEl.classList.add('on'); clearTimeout(t); t = setTimeout(() => hudEl.classList.remove('on'), 1300); });
+api.onAnno(m => { marks.handle(m); if (!raf) raf = requestAnimationFrame(frame); });
+function frame() {
+  ctx.setTransform(dpr, 0, 0, dpr, -origin.x * dpr, -origin.y * dpr);
+  ctx.clearRect(origin.x, origin.y, innerWidth, innerHeight);
+  marks.draw(ctx);
+  raf = marks.empty ? 0 : requestAnimationFrame(frame);
+}
 </script></body></html>

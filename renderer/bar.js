@@ -1,6 +1,8 @@
 const $ = id => document.getElementById(id);
 let S = {};            // settings
 let rec = null;        // active recording session
+const marks = new Marks();
+api.onAnno(m => marks.handle(m));
 let zoomCb = null;
 api.onZoom(s => zoomCb && zoomCb(s));
 let speedCb = null;
@@ -146,6 +148,14 @@ async function startRecording({ region, display, settings }) {
     for (const k of ['x', 'y', 'w', 'h']) curR[k] += (tgtR[k] - curR[k]) * a;
     if (dx || dy) { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, ow, oh); }
     ctx.drawImage(video, curR.x, curR.y, curR.w, curR.h, dx, dy, dw, dh);
+    if (!marks.empty) { // abs screen DIP -> output pixels, following the current zoom crop
+      const sx = (k * dw) / curR.w, sy = (k * dh) / curR.h;
+      ctx.save();
+      ctx.beginPath(); ctx.rect(dx, dy, dw, dh); ctx.clip();
+      ctx.setTransform(sx, 0, 0, sy, dx - (k * display.x + curR.x) * dw / curR.w, dy - (k * display.y + curR.y) * dh / curR.h);
+      marks.draw(ctx);
+      ctx.restore();
+    }
     vtrack.requestFrame && vtrack.requestFrame();
   };
   const timer = setInterval(draw, 1000 / fps);
@@ -220,7 +230,7 @@ async function teardown() {
     clearInterval(rec.timer); clearInterval(rec.tick);
     rec.ds.getTracks().forEach(t => t.stop()); rec.micStream.forEach(s => s.getTracks().forEach(t => t.stop()));
     try { await rec.ac.close(); } catch { /* ignore */ }
-    rec.video.srcObject = null; rec = null; zoomCb = null; speedCb = null;
+    rec.video.srcObject = null; rec = null; marks.clear(); zoomCb = null; speedCb = null;
     ['btnPause', 'btnStop', 'dot'].forEach(id => show(id, true)); show('spd', false); api.recState(false);
   }
   show('recing', false); show('idle', true);
