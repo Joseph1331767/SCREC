@@ -1,6 +1,11 @@
 const $ = id => document.getElementById(id);
 let S = {};            // settings
 let rec = null;        // active recording session
+let zoomCb = null;
+api.onZoom(s => zoomCb && zoomCb(s));
+let speedCb = null;
+api.onSpeed(sp => speedCb && speedCb(sp));
+api.onRenderProgress(p => { if (rec && rec.baking) $('timer').textContent = 'Baking ' + Math.round(p * 100) + '%'; });
 let resultFile = null, resultKind = null;
 
 // ---------- layout ----------
@@ -21,12 +26,22 @@ async function loadSettings() {
   $('cSys').checked = S.system; $('cMic').checked = S.mic; $('cZoom').checked = S.zoom; $('cStart').checked = S.startup;
   $('dir').textContent = S.saveDir;
   $('ver').textContent = 'v' + S.version;
+  syncMarks();
   await fillMics();
 }
 const bind = (id, key, get) => $(id).addEventListener('change', async () => { S = { ...S, ...(await api.setSettings({ [key]: get($(id)) })) }; });
 bind('sRes', 'resolution', e => e.value); bind('sFit', 'fit', e => e.value); bind('sFps', 'fps', e => +e.value);
 bind('cSys', 'system', e => e.checked); bind('cMic', 'mic', e => e.checked); bind('cZoom', 'zoom', e => e.checked);
-bind('cStart', 'startup', e => e.checked); bind('sMic', 'micDevice', e => e.value);
+bind('cStart', 'startup', e => e.checked);
+function syncMarks() {
+  $('rZoom').value = S.zoomLevel; $('vZoom').textContent = S.zoomLevel + '×';
+  $('iCol').value = S.annotColor; $('sAnn').value = S.annotStyle; $('rSize').value = S.annotSize; $('vSize').textContent = S.annotSize;
+}
+bind('rZoom', 'zoomLevel', e => +e.value); bind('iCol', 'annotColor', e => e.value);
+bind('sAnn', 'annotStyle', e => e.value); bind('rSize', 'annotSize', e => +e.value);
+$('rZoom').addEventListener('input', () => { $('vZoom').textContent = $('rZoom').value + '×'; });
+$('rSize').addEventListener('input', () => { $('vSize').textContent = $('rSize').value; });
+api.onSettingsChanged(s => { S = { ...S, ...s }; syncMarks(); }); bind('sMic', 'micDevice', e => e.value);
 $('btnDir').onclick = async () => { $('dir').textContent = await api.pickDir(); };
 $('btnSet').onclick = () => { const open = $('panel').classList.contains('hidden'); show('panel', open); if (open) show('result', false); };
 $('btnHide').onclick = () => api.minimize();
@@ -118,9 +133,19 @@ async function startRecording({ region, display, settings }) {
   const cs = canvas.captureStream(0);
   const vtrack = cs.getVideoTracks()[0];
 
+  // viewport box (abs DIP, from main) -> source rect in video px, eased so the zoom glides in and out
+  const full = { x: bx, y: by, w: bw, h: bh };
+  let curR = { ...full }, tgtR = { ...full }, lastT = performance.now();
+  zoomCb = s => {
+    if (!s.active || !s.box) { tgtR = { ...full }; return; }
+    const fx = (s.box.x - region.x) / region.width, fy = (s.box.y - region.y) / region.height;
+    tgtR = { x: bx + fx * bw, y: by + fy * bh, w: (s.box.width / region.width) * bw, h: (s.box.height / region.height) * bh };
+  };
   const draw = () => {
+    const now = performance.now(), a = 1 - Math.exp(-(now - lastT) / 110); lastT = now;
+    for (const k of ['x', 'y', 'w', 'h']) curR[k] += (tgtR[k] - curR[k]) * a;
     if (dx || dy) { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, ow, oh); }
-    ctx.drawImage(video, bx, by, bw, bh, dx, dy, dw, dh);
+    ctx.drawImage(video, curR.x, curR.y, curR.w, curR.h, dx, dy, dw, dh);
     vtrack.requestFrame && vtrack.requestFrame();
   };
   const timer = setInterval(draw, 1000 / fps);
@@ -148,13 +173,16 @@ async function startRecording({ region, display, settings }) {
   let chain = Promise.resolve();
   mr.ondataavailable = e => { if (e.data.size) chain = chain.then(async () => api.recChunk(await e.data.arrayBuffer())); };
 
-  rec = { mr, ds, video, timer, ac, micStream, canvas, ext, t0: 0, acc: 0, paused: false, tick: null, info: { w: ow, h: oh, k } };
-  rec.donePromise = new Promise(res => { mr.onstop = async () => { await chain; res(await api.recFinish()); }; });
+  rec = { hasAudio: nAudio > 0, fps, segs: [{ t: 0, speed: 1 }], mr, ds, video, timer, ac, micStream, canvas, ext, t0: 0, acc: 0, paused: false, tick: null, info: { w: ow, h: oh, k } };
+  rec.donePromise = new Promise(res => { mr.onstop = async () => { await chain; res(await api.recFinish(rec.finishOpts)); }; });
   // stop if the capture source dies
   ds.getVideoTracks()[0].onended = () => stopRecording();
   mr.start(1000);
   rec.t0 = performance.now();
   rec.tick = setInterval(updateTimer, 250);
+  speedCb = sp => { if (!rec) return; rec.segs.push({ t: elapsed() / 1000, speed: sp }); show('spd', sp !== 1); $('spd').textContent = sp + '×'; };
+  show('spd', false);
+  api.recState(true);
   show('idle', false); show('recing', true); show('panel', false); show('result', false); toast('');
   setPaused(false); updateTimer();
 }
@@ -178,6 +206,11 @@ async function stopRecording() {
   rec.stopping = true;
   const r = rec;
   if (r.mr.state !== 'inactive') r.mr.stop();
+  r.segs.forEach((s, i) => { s.end = i + 1 < r.segs.length ? r.segs[i + 1].t : null; });
+  const total = elapsed() / 1000;
+  const segments = r.segs.map(s => ({ start: s.t, end: s.end, speed: s.speed })).filter(s => s.end == null || s.end > s.start);
+  r.finishOpts = { segments, hasAudio: r.hasAudio, fps: r.fps, total };
+  if (segments.some(s => s.speed !== 1)) { r.baking = true; ['btnPause', 'btnStop', 'spd', 'dot'].forEach(id => show(id, false)); $('timer').textContent = 'Baking 0%'; }
   const result = await r.donePromise;
   await teardown();
   showResult(result);
@@ -187,7 +220,8 @@ async function teardown() {
     clearInterval(rec.timer); clearInterval(rec.tick);
     rec.ds.getTracks().forEach(t => t.stop()); rec.micStream.forEach(s => s.getTracks().forEach(t => t.stop()));
     try { await rec.ac.close(); } catch { /* ignore */ }
-    rec.video.srcObject = null; rec = null;
+    rec.video.srcObject = null; rec = null; zoomCb = null; speedCb = null;
+    ['btnPause', 'btnStop', 'dot'].forEach(id => show(id, true)); show('spd', false); api.recState(false);
   }
   show('recing', false); show('idle', true);
 }

@@ -8,7 +8,7 @@
       <button id="btnSet" class="ib" title="Settings"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="16" cy="7" r="2.5" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="8" cy="17" r="2.5" fill="none" stroke="currentColor" stroke-width="2"/></svg></button>
     </div>
     <div id="recing" class="grp hidden">
-      <span id="dot"></span><span id="timer">00:00</span>
+      <span id="dot"></span><span id="timer">00:00</span><span id="spd" class="hidden"></span>
       <button id="btnPause" class="ib" title="Pause"><svg id="icPause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14" stroke="currentColor" stroke-width="3.5" stroke-linecap="round"/></svg><svg id="icPlay" class="hidden" viewBox="0 0 24 24"><path d="M8 5l11 7-11 7z" fill="currentColor"/></svg></button>
       <button id="btnStop" class="ib stop" title="Stop"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg></button>
     </div>
@@ -25,7 +25,12 @@
     <label class="chk"><input type="checkbox" id="cSys"> Device audio</label>
     <label class="chk"><input type="checkbox" id="cMic"> Microphone</label>
     <label>Mic device <select id="sMic"></select></label>
-    <label class="chk"><input type="checkbox" id="cZoom"> Zoom: Ctrl+Alt+Shift + hold LMB</label>
+    <label class="chk"><input type="checkbox" id="cZoom"> Director hotkeys (hold Ctrl+Alt+Shift)</label>
+    <div class="hint">Mouse = aim box · LMB = zoom to box · wheel = amount · arrows = nudge · RMB = draw / tap for beacon · 1-9 = speed (5 = normal)</div>
+    <label>Zoom amount <span class="rng"><input type="range" id="rZoom" min="1.25" max="6" step="0.25"><b id="vZoom"></b></span></label>
+    <label>Mark color <input type="color" id="iCol"></label>
+    <label>Mark style <select id="sAnn"><option value="pen">Pen</option><option value="marker">Highlighter</option><option value="glow">Neon glow</option></select></label>
+    <label>Mark size <span class="rng"><input type="range" id="rSize" min="2" max="16" step="1"><b id="vSize"></b></span></label>
     <label class="chk"><input type="checkbox" id="cStart"> Start with Windows</label>
     <div class="dirrow"><span id="dir"></span><button id="btnDir" class="small">Change</button></div>
     <div class="dirrow"><span id="ver"></span><button id="btnUpd" class="small">Updates</button><button id="btnHide" class="small">Hide</button><button id="btnQuit" class="small danger">Quit</button></div>

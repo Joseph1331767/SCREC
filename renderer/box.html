@@ -1,0 +1,23 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+html,body{margin:0;height:100%;overflow:hidden;background:transparent;font:600 13px system-ui,"Segoe UI",sans-serif}
+#box{position:fixed;display:none;box-sizing:border-box;border:2px dashed rgba(255,255,255,.95);
+  box-shadow:0 0 0 1px rgba(0,0,0,.6),inset 0 0 0 1px rgba(0,0,0,.35);background:rgba(255,255,255,.04)}
+#box.active{border:3px solid #ef4444;background:rgba(239,68,68,.07)}
+#lbl{position:absolute;left:0;top:-22px;background:rgba(17,17,17,.85);color:#fff;padding:2px 7px;border-radius:5px;font-size:12px;white-space:nowrap}
+#hud{position:fixed;top:56px;left:50%;transform:translateX(-50%);background:rgba(17,17,17,.88);color:#fff;
+  padding:7px 16px;border-radius:9px;font-size:15px;opacity:0;transition:opacity .15s}
+#hud.on{opacity:1}
+</style></head><body>
+<div id="box"><div id="lbl"></div></div><div id="hud"></div>
+<script>
+const box = document.getElementById('box'), lbl = document.getElementById('lbl'), hudEl = document.getElementById('hud');
+api.onBox(b => {
+  box.style.display = 'block';
+  box.style.left = b.x + 'px'; box.style.top = b.y + 'px'; box.style.width = b.width + 'px'; box.style.height = b.height + 'px';
+  box.classList.toggle('active', b.active);
+  lbl.textContent = b.level + '×' + (b.active ? ' · zoomed in video' : ' · hold LMB to zoom');
+  lbl.style.top = b.y < 26 ? '4px' : '-22px';
+});
+let t = 0;
+api.onHud(text => { hudEl.textContent = text; hudEl.classList.add('on'); clearTimeout(t); t = setTimeout(() => hudEl.classList.remove('on'), 1300); });
+</script></body></html>

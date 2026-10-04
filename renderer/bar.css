@@ -22,8 +22,13 @@ button:hover{background:#2f3341}
 #timer{font-variant-numeric:tabular-nums;font-weight:600;min-width:38px;margin-right:2px}
 #msg{padding:5px 10px;color:#fbbf24;font-size:11px;max-width:300px;white-space:normal}
 #panel{padding:8px 12px 12px;display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--line)}
+#panel{max-height:75vh;overflow-y:auto}
 #app.up #panel,#app.up #result,#app.up #msg{border-top:0;border-bottom:1px solid var(--line)}
 #panel label{display:flex;justify-content:space-between;align-items:center;gap:8px;color:var(--mut)}
+.hint{color:var(--mut);font-size:10.5px;line-height:1.35;margin:-2px 0 2px 22px}
+.rng{display:flex;align-items:center;gap:6px}.rng input{width:110px}.rng b{min-width:30px;text-align:right;color:var(--fg);font-weight:600}
+input[type=color]{width:34px;height:22px;padding:0;border:1px solid var(--line);border-radius:5px;background:#2a2d39}
+#spd{background:#fbbf24;color:#111;border-radius:5px;padding:1px 5px;font-weight:700;font-size:11px;margin-right:3px}
 #panel label.chk{justify-content:flex-start;color:var(--fg)}
 select{background:#2a2d39;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:3px;max-width:180px;font:inherit}
 .dirrow{display:flex;align-items:center;gap:6px;color:var(--mut);font-size:11px}

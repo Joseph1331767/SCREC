@@ -15,6 +15,10 @@ const defaults = {
   micDevice: 'auto',
   startup: true,
   zoom: true,
+  zoomLevel: 2,
+  annotColor: '#ff3b30',
+  annotStyle: 'pen', // pen | marker | glow
+  annotSize: 5,
   lastMoveDir: null,
   barPos: null,
 };
@@ -31,7 +35,7 @@ function applyStartup() {
   app.setLoginItemSettings({ openAtLogin: !!settings.startup, args: ['--hidden-start'] });
 }
 
-let barWin = null, tray = null, zoomWin = null;
+let barWin = null, tray = null;
 let selectWins = [];
 let pendingDisplayId = null, pendingSystemAudio = false;
 let recStream = null, recPath = null;
@@ -63,6 +67,7 @@ function createBar() {
     webPreferences: { preload, backgroundThrottling: false },
   });
   barWin.setAlwaysOnTop(true, 'screen-saver');
+  barWin.setContentProtection(true); // keep the bar out of recordings
   barWin.loadFile(path.join(__dirname, 'renderer', 'bar.html'));
   barWin.once('ready-to-show', () => barWin.show());
 }
@@ -188,6 +193,7 @@ async function captureImage(display, rect) {
 async function beginVideo(display, rect) {
   pendingDisplayId = String(display.id);
   pendingSystemAudio = !!settings.system;
+  pendingRegion = { x: display.bounds.x + rect.x, y: display.bounds.y + rect.y, width: rect.width, height: rect.height };
   barWin.show();
   toBar('rec:start', {
     region: { x: display.bounds.x + rect.x, y: display.bounds.y + rect.y, width: rect.width, height: rect.height },
@@ -215,10 +221,18 @@ ipcMain.handle('rec:open', (_e, ext) => {
   return recPath;
 });
 ipcMain.handle('rec:chunk', (_e, buf) => new Promise(res => recStream.write(Buffer.from(buf), () => res())));
-ipcMain.handle('rec:finish', () => new Promise(res => {
+ipcMain.handle('rec:finish', async (_e, opts) => {
   const file = recPath;
-  recStream.end(() => { recStream = null; recPath = null; res({ kind: 'video', file, name: path.basename(file) }); });
-}));
+  await new Promise(res => recStream.end(res));
+  recStream = null; recPath = null;
+  let out = file;
+  const { bake, needsBake } = require('./render');
+  if (opts && opts.segments && needsBake(opts.segments)) {
+    try { out = await bake(file, opts.segments, opts, p => toBar('render:progress', p)); }
+    catch (e) { toBar('error', 'Speed render failed — kept the raw recording. ' + e.message); }
+  }
+  return { kind: 'video', file: out, name: path.basename(out) };
+});
 
 // ---------- settings / result actions ----------
 ipcMain.handle('settings:get', () => ({ ...settings, version: app.getVersion(), packaged: app.isPackaged }));
@@ -258,72 +272,158 @@ ipcMain.on('file:delete', (_e, f) => { try { fs.unlinkSync(f); } catch { /* igno
 ipcMain.on('file:copyImage', (_e, f) => clipboard.writeImage(nativeImage.createFromPath(f)));
 ipcMain.on('file:copyPath', (_e, f) => clipboard.writeText(f));
 
-// ---------- zoom hotkey (Ctrl+Alt+Shift held, then hold LMB) ----------
-// The overlay shows a snapshot taken at press time. A live overlay would be captured by the screen
-// capture (window exclusion isn't honoured) and feed back into itself, so the zoom is a frozen still.
-let uio = null, UKey = null;
+// ---------- director hotkeys (hold Ctrl+Alt+Shift) ----------
+// While the chord is held: a viewport box follows the mouse (wheel = zoom amount, arrows = nudge),
+// LMB held = recording zooms into the box, RMB = annotate (tap = beacon), 1-9 = baked playback speed.
+// The box/HUD window is excluded from capture; the annotation window is not, so viewers see marks.
+// (Window exclusion only works on windows that are NOT click-through, so overlays catch input while shown.)
+const SPEEDS = [0.25, 0.4, 0.6, 0.8, 1, 1.5, 2, 3, 4];
+const K = { ctrl: [29, 3613], alt: [56, 3640], shift: [42, 54], left: 57419, right: 57421, up: 57416, down: 57424 };
 const down = new Set();
-let zooming = false, zoomTimer = null, zoomDisplay = null;
+let uio = null;
+let chord = false, chordTimer = null, directing = false, dirTimer = null;
+let overlayDisplay = null, boxWin = null, annoWin = null;
+let lmb = false, rmb = false, rmbTimer = null, rmbLast = null;
+let off = { x: 0, y: 0 };
+let recRegion = null, pendingRegion = null;
 
-function ensureZoomWin(d) {
-  if (zoomWin && !zoomWin.isDestroyed() && zoomDisplay && zoomDisplay.id === d.id) return;
-  if (zoomWin && !zoomWin.isDestroyed()) zoomWin.destroy();
-  zoomDisplay = d;
-  zoomWin = new BrowserWindow({
+function mkOverlay(d, file, protect) {
+  const w = new BrowserWindow({
     x: d.bounds.x, y: d.bounds.y, width: d.bounds.width, height: d.bounds.height,
     frame: false, transparent: true, alwaysOnTop: true, skipTaskbar: true, resizable: false, movable: false,
     focusable: false, fullscreenable: false, hasShadow: false, show: false, backgroundColor: '#00000000',
-    webPreferences: { preload },
+    webPreferences: { preload, backgroundThrottling: false },
   });
-  zoomWin.setAlwaysOnTop(true, 'screen-saver');
-  zoomWin.setIgnoreMouseEvents(true);
-  zoomWin.loadFile(path.join(__dirname, 'renderer', 'zoom.html'));
+  w.setAlwaysOnTop(true, 'screen-saver');
+  if (protect) w.setContentProtection(true);
+  w.loadFile(path.join(__dirname, 'renderer', file));
+  w.webContents.once('did-finish-load', () => w.webContents.send('overlay:init', { x: d.bounds.x, y: d.bounds.y, width: d.bounds.width, height: d.bounds.height }));
+  return w;
 }
-function sendZoom(active) {
+function ensureOverlays(d) {
+  const alive = w => w && !w.isDestroyed();
+  if (alive(boxWin) && alive(annoWin) && overlayDisplay && overlayDisplay.id === d.id) return;
+  if (alive(boxWin)) boxWin.destroy();
+  if (alive(annoWin)) annoWin.destroy();
+  overlayDisplay = d;
+  boxWin = mkOverlay(d, 'box.html', true);
+  annoWin = mkOverlay(d, 'anno.html', false);
+}
+const sendBox = (ch, msg) => { if (boxWin && !boxWin.isDestroyed()) boxWin.webContents.send(ch, msg); };
+const sendAnno = msg => { if (annoWin && !annoWin.isDestroyed()) annoWin.webContents.send('anno', msg); };
+
+function viewBounds() { return recRegion || overlayDisplay.bounds; }
+function computeBox() {
+  const p = screen.getCursorScreenPoint(), B = viewBounds(), z = settings.zoomLevel || 2;
+  const w = B.width / z, h = B.height / z;
+  off.x = clamp(off.x, -B.width, B.width); off.y = clamp(off.y, -B.height, B.height);
+  return {
+    x: clamp(p.x + off.x - w / 2, B.x, B.x + B.width - w),
+    y: clamp(p.y + off.y - h / 2, B.y, B.y + B.height - h),
+    width: w, height: h,
+  };
+}
+function directTick() {
+  const box = computeBox(), d = overlayDisplay;
+  sendBox('box', { x: box.x - d.bounds.x, y: box.y - d.bounds.y, width: box.width, height: box.height, active: lmb, level: settings.zoomLevel || 2 });
+  if (recRegion) toBar('zoom:state', { active: lmb, box });
+}
+const hud = text => sendBox('hud', text);
+
+function enterDirector() {
+  if (!settings.zoom || directing) return;
+  directing = true;
+  const d = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  ensureOverlays(d);
+  off = { x: 0, y: 0 };
+  annoWin.setIgnoreMouseEvents(false);
+  boxWin.showInactive(); annoWin.showInactive();
+  directTick();
+  dirTimer = setInterval(directTick, 8);
+}
+function exitDirector() {
+  clearTimeout(chordTimer);
+  if (!directing) return;
+  directing = false;
+  clearInterval(dirTimer); dirTimer = null;
+  if (lmb) { lmb = false; if (recRegion) toBar('zoom:state', { active: false, box: null }); }
+  endStroke();
+  if (boxWin && !boxWin.isDestroyed()) boxWin.hide();
+  if (annoWin && !annoWin.isDestroyed()) { annoWin.setIgnoreMouseEvents(true); sendAnno({ type: 'probe' }); }
+}
+ipcMain.on('anno:empty', () => { if (!directing && annoWin && !annoWin.isDestroyed()) annoWin.hide(); });
+
+function startStroke() {
+  if (rmb || !directing) return;
+  rmb = true;
   const p = screen.getCursorScreenPoint();
-  if (zoomWin && !zoomWin.isDestroyed()) zoomWin.webContents.send('zoom:state', { active, x: p.x, y: p.y });
+  rmbLast = p;
+  sendAnno({ type: 'start', x: p.x, y: p.y, style: { color: settings.annotColor, style: settings.annotStyle, size: settings.annotSize } });
+  rmbTimer = setInterval(() => {
+    const c = screen.getCursorScreenPoint();
+    if (c.x === rmbLast.x && c.y === rmbLast.y) return;
+    rmbLast = c; sendAnno({ type: 'pt', x: c.x, y: c.y });
+  }, 8);
 }
-async function startZoom() {
-  if (!settings.zoom || zooming) return;
-  zooming = true;
-  try {
-    const d = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
-    const visible = zoomWin && !zoomWin.isDestroyed() && zoomWin.isVisible() && zoomDisplay && zoomDisplay.id === d.id;
-    if (!visible) {
-      ensureZoomWin(d);
-      if (zoomWin.webContents.isLoading()) await new Promise(r => zoomWin.webContents.once('did-finish-load', r));
-      const src = await sourceFor(d); // overlay is hidden here, so the snapshot is clean
-      if (!zooming) return;
-      zoomWin.webContents.send('zoom:image', src.thumbnail.toJPEG(92), { x: d.bounds.x, y: d.bounds.y });
-      await new Promise(r => { const t = setTimeout(r, 1500); ipcMain.once('zoom:ready', () => { clearTimeout(t); r(); }); });
-      if (!zooming) return;
-      zoomWin.showInactive();
-    }
-    sendZoom(true);
-    zoomTimer = setInterval(() => sendZoom(true), 8);
-  } catch (e) { console.error('zoom failed', e); zooming = false; }
+function endStroke() {
+  if (!rmb) return;
+  rmb = false; clearInterval(rmbTimer); rmbTimer = null;
+  sendAnno({ type: 'end' });
 }
-function stopZoom() {
-  if (zoomTimer) { clearInterval(zoomTimer); zoomTimer = null; }
-  if (!zooming) return;
-  zooming = false;
-  sendZoom(false);
+
+function setLevel(delta) {
+  settings.zoomLevel = Math.min(6, Math.max(1.25, Math.round(((settings.zoomLevel || 2) + delta) * 4) / 4));
+  saveSettings(); toBar('settings:changed', settings);
+  hud(`Zoom ${settings.zoomLevel}×`);
 }
-ipcMain.on('zoom:hide', () => { if (!zooming && zoomWin && !zoomWin.isDestroyed()) zoomWin.hide(); });
+function setSpeed(n) {
+  if (!recRegion) { hud('Start a recording first'); return; }
+  const sp = SPEEDS[n - 1];
+  toBar('speed:set', sp);
+  hud(sp === 1 ? 'Speed normal' : `Speed ${sp}×`);
+}
+
+const has = g => K[g].some(k => down.has(k));
+const combo = () => has('ctrl') && has('alt') && has('shift');
+const hk = {
+  keydown(code) {
+    down.add(code);
+    if (combo() && !chord) { chord = true; chordTimer = setTimeout(() => { if (chord) enterDirector(); }, 100); }
+    if (!directing || !chord) return;
+    const step = 10;
+    if (code === K.left) off.x -= step; else if (code === K.right) off.x += step;
+    else if (code === K.up) off.y -= step; else if (code === K.down) off.y += step;
+    else if (code >= 2 && code <= 10) setSpeed(code - 1);
+  },
+  keyup(code) {
+    down.delete(code);
+    if (chord && !combo()) { chord = false; exitDirector(); }
+  },
+  mousedown(btn) {
+    if (!directing) return;
+    if (btn === 1) lmb = true; else if (btn === 2) startStroke();
+  },
+  mouseup(btn) {
+    if (btn === 1 && lmb) { lmb = false; if (recRegion) toBar('zoom:state', { active: false, box: null }); }
+    else if (btn === 2) endStroke();
+  },
+  wheel(rotation) { if (directing && rotation) setLevel(rotation < 0 ? 0.25 : -0.25); },
+};
+
+ipcMain.on('rec:state', (_e, recording) => {
+  recRegion = recording ? pendingRegion : null;
+  if (!recording) toBar('zoom:state', { active: false, box: null });
+});
 
 function setupHooks() {
-  try {
-    const m = require('uiohook-napi');
-    uio = m.uIOhook; UKey = m.UiohookKey;
-  } catch (e) { console.error('uiohook unavailable', e); return; }
-  const grp = { ctrl: [UKey.Ctrl, UKey.CtrlRight], alt: [UKey.Alt, UKey.AltRight], shift: [UKey.Shift, UKey.ShiftRight] };
-  const has = g => grp[g].some(k => down.has(k));
-  const combo = () => has('ctrl') && has('alt') && has('shift');
-  uio.on('keydown', e => { down.add(e.keycode); });
-  uio.on('keyup', e => { down.delete(e.keycode); });
-  uio.on('mousedown', e => { if (e.button === 1 && combo()) startZoom(); });
-  uio.on('mouseup', e => { if (e.button === 1) stopZoom(); });
+  try { uio = require('uiohook-napi').uIOhook; } catch (e) { console.error('uiohook unavailable', e); return; }
+  uio.on('keydown', e => hk.keydown(e.keycode));
+  uio.on('keyup', e => hk.keyup(e.keycode));
+  uio.on('mousedown', e => hk.mousedown(e.button));
+  uio.on('mouseup', e => hk.mouseup(e.button));
+  uio.on('wheel', e => hk.wheel(e.rotation));
   uio.start();
+  setTimeout(() => ensureOverlays(screen.getPrimaryDisplay()), 2500); // pre-warm so the first press is instant
 }
 
 // ---------- updates ----------
@@ -350,7 +450,7 @@ app.whenReady().then(() => {
   setupDisplayMedia();
   createBar(); createTray(); setupHooks();
   setTimeout(() => checkUpdates(false), 4000);
-  if (process.env.SCREC_SELFTEST) require('./scripts/selftest')({ app, barWin, screen, startSelect, beginVideo, captureImage, ipcMain, startZoom, stopZoom, getSettings: () => settings });
+  if (process.env.SCREC_SELFTEST) require('./scripts/selftest')({ app, barWin, screen, startSelect, beginVideo, captureImage, ipcMain, hk, screen: screen, getSettings: () => settings });
 });
 app.on('window-all-closed', e => e.preventDefault());
 app.on('will-quit', () => { try { uio && uio.stop(); } catch { /* ignore */ } });
