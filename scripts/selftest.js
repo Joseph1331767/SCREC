@@ -39,9 +39,10 @@ module.exports = ({ app, barWin, screen, captureImage, beginVideo, hk, act, swal
   const glide = async (x0, y0, x1, y1, ms) => { const n = Math.max(2, Math.round(ms / 40)); for (let i = 1; i <= n; i++) { move(x0 + (x1 - x0) * i / n, y0 + (y1 - y0) * i / n); await sleep(ms / n); } };
 
   // chord / mouse / keys: real OS events or direct handler calls
-  const VK = { ctrl: 0x11, alt: 0x12, shift: 0x10 };
-  const chordDown = async () => { if (real) { for (const k of ['ctrl', 'alt', 'shift']) { send(`K ${VK[k]} d`); await sleep(40); } } else [29, 56, 42].forEach(c => hk.keydown(c)); };
-  const chordUp = async () => { if (real) { for (const k of ['shift', 'alt', 'ctrl']) { send(`K ${VK[k]} u`); await sleep(40); } } else [29, 56, 42].forEach(c => hk.keyup(c)); };
+  const VK = { ctrl: 0x11, alt: 0x12, shift: 0x10 }, CODE = { ctrl: 29, alt: 56, shift: 42 };
+  const chordKeys = (process.env.SCREC_CHORD || 'alt+shift').split('+'); // must match the app's `chord` setting
+  const chordDown = async () => { if (real) { for (const k of chordKeys) { send(`K ${VK[k]} d`); await sleep(40); } } else chordKeys.forEach(k => hk.keydown(CODE[k])); };
+  const chordUp = async () => { if (real) { for (const k of chordKeys.slice().reverse()) { send(`K ${VK[k]} u`); await sleep(40); } } else chordKeys.slice().reverse().forEach(k => hk.keyup(CODE[k])); };
   const lmb = down => (real ? send(`M ${down ? 2 : 4}`) : (down ? hk.mousedown(1) : hk.mouseup(1)));
   const rmb = down => (real ? send(`M ${down ? 8 : 16}`) : (down ? hk.mousedown(2) : hk.mouseup(2)));
   const wheelUp = () => (real ? send('W 120') : hk.wheel(-1));
@@ -77,6 +78,15 @@ module.exports = ({ app, barWin, screen, captureImage, beginVideo, hk, act, swal
     if (on('lmb')) { lmb(false); log('LMB released: zoom out'); await sleep(800); send('F after-lmb'); await sleep(700); }
     if (on('digits')) { await digit(9); log('speed 9'); await sleep(2500); await digit(1); log('speed 1'); await sleep(1500); await digit(5); log('speed 5'); await sleep(2000); }
     if (on('rawclick')) { /* no chord: plain real click on the page */ await chordUp(); move(700, 450); await sleep(300); lmb(true); await sleep(80); lmb(false); log('raw click'); await sleep(4000); }
+    if (on('diag')) {
+      for (let i = 0; i < 9; i++) {
+        const r = await barWin.webContents.executeJavaScript(`(() => { try { const v = rec.video, tr = rec.ds.getVideoTracks()[0];
+          const c = document.createElement('canvas'); c.width = 64; c.height = 36; const x = c.getContext('2d'); x.drawImage(v, 0, 0, 64, 36); const d = x.getImageData(0, 0, 64, 36).data; let s = 0; for (let k = 0; k < d.length; k += 4) s += d[k];
+          const o = rec.canvas.getContext('2d').getImageData(Math.floor(rec.canvas.width / 2), Math.floor(rec.canvas.height / 2), 1, 1).data;
+          return JSON.stringify({ vidLuma: Math.round(s / (d.length / 4)), outPx: o[0], rs: v.readyState, paused: v.paused, vw: v.videoWidth, trk: tr.readyState + (tr.muted ? '/muted' : ''), vis: document.visibilityState }); } catch (e) { return 'ERR ' + e.message; } })()`);
+        log('diag t+' + (i * 0.5) + 's ' + r); await sleep(500);
+      }
+    }
     if (on('barmove')) { for (let i = 0; i < 4; i++) { const b = barWin.getBounds(); barWin.setBounds({ ...b, x: b.x + 30 }); await sleep(300); } log('bar moved'); await sleep(1500); }
     if (on('barsize')) { const b = barWin.getBounds(); barWin.setBounds({ ...b, width: b.width + 40 }); log('bar resized'); await sleep(2500); }
     if (on('movefix1')) { for (let i = 0; i < 3; i++) { const b = barWin.getBounds(); barWin.setBounds({ ...b, x: b.x + 30 }); await sleep(200); } barWin.setContentProtection(false); await sleep(300); barWin.setContentProtection(true); log('toggled protection'); await sleep(3000); }

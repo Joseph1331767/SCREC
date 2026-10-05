@@ -37,10 +37,10 @@ bind('sRes', 'resolution', e => e.value); bind('sFit', 'fit', e => e.value); bin
 bind('cSys', 'system', e => e.checked); bind('cMic', 'mic', e => e.checked); bind('cZoom', 'zoom', e => e.checked);
 bind('cStart', 'startup', e => e.checked);
 function syncMarks() {
-  $('rZoom').value = S.zoomLevel; $('vZoom').textContent = S.zoomLevel + '×';
+  $('sChord').value = S.chord || 'alt+shift'; $('rZoom').value = S.zoomLevel; $('vZoom').textContent = S.zoomLevel + '×';
   $('iCol').value = S.annotColor; $('sAnn').value = S.annotStyle; $('rSize').value = S.annotSize; $('vSize').textContent = S.annotSize;
 }
-bind('rZoom', 'zoomLevel', e => +e.value); bind('iCol', 'annotColor', e => e.value);
+bind('sChord', 'chord', e => e.value); bind('rZoom', 'zoomLevel', e => +e.value); bind('iCol', 'annotColor', e => e.value);
 bind('sAnn', 'annotStyle', e => e.value); bind('rSize', 'annotSize', e => +e.value);
 $('rZoom').addEventListener('input', () => { $('vZoom').textContent = $('rZoom').value + '×'; });
 $('rSize').addEventListener('input', () => { $('vSize').textContent = $('rSize').value; });

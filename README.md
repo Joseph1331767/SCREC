@@ -5,7 +5,7 @@ Tiny screen recorder bar. Image / Video buttons → drag an area → record. Pau
 - Resolution: auto (selection size) or 720p–4K; scale-to-fit / stretch / fill
 - Starts with Windows, tray icon, auto-updates from GitHub Releases
 
-## Director hotkeys — hold `Ctrl+Alt+Shift`
+## Director hotkeys — hold `Alt+Shift` (configurable in settings)
 Live, no freeze-frames. Effects are baked into the recording for viewers.
 
 | Input | Effect |
@@ -32,3 +32,5 @@ Capture-glitch regression test (real keyboard/mouse injection, takes over input 
 
 ## Release
 Bump `version` in package.json, `npm run dist`, then upload `dist/latest.yml`, `SCREC-Setup-X.Y.Z.exe` and its `.blockmap` to a GitHub release tagged `vX.Y.Z`.
+
+> **Why not Ctrl+Alt+Shift?** On at least one PC, holding all three modifiers makes screen capture return black frames (the real screen is fine) even with SCREC not involved. Any two of them are fine, so the default is Alt+Shift; Ctrl+Alt and Ctrl+Shift are available too.

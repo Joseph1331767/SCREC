@@ -19,6 +19,7 @@ const defaults = {
   micDevice: 'auto',
   startup: true,
   zoom: true,
+  chord: 'alt+shift', // modifiers to hold: alt+shift | ctrl+alt | ctrl+shift | ctrl+alt+shift (the 3-key one blanks screen capture on some PCs)
   zoomLevel: 2,
   annotColor: '#ff3b30',
   annotStyle: 'pen', // pen | marker | glow
@@ -434,7 +435,11 @@ function act(code) {
 }
 const MODS = ['ctrl', 'alt', 'shift'];
 const has = g => K[g].some(k => down.has(k));
-const combo = () => MODS.every(has);
+const chordMods = () => {
+  const m = String(settings.chord || 'alt+shift').split('+').filter(x => MODS.includes(x));
+  return m.length >= 2 ? m : ['alt', 'shift'];
+};
+const combo = () => chordMods().every(has);
 const heldKeys = new Set(), heldButtons = new Set(); // swallowed DOWNs, so the matching UP is swallowed too
 
 // The OS's real modifier state (null = unknown: hooks unavailable, or the selftest driving hk directly).
@@ -467,7 +472,7 @@ function forceRelease(why) {
 let badTicks = 0, idleTicks = 0;
 function watchdog() {
   const p = chord ? physMods() : null; // idle: no polling at all
-  if (chord && p && !(p.ctrl && p.alt && p.shift)) { if (++badTicks >= 2) { badTicks = 0; forceRelease('modifier released without a key-up'); } } else badTicks = 0;
+  if (chord && p && !chordMods().every(g => p[g])) { if (++badTicks >= 2) { badTicks = 0; forceRelease('modifier released without a key-up'); } } else badTicks = 0;
   if (pendingUnhook && hooks) { // a swallowed button whose UP never arrived (it is physically up) must not keep the hook alive
     if (!hooks.buttonsDown()) { if (++idleTicks >= 2) { idleTicks = 0; heldButtons.clear(); pendingUnhook = false; hooks.stopMouse(); } } else idleTicks = 0;
   } else idleTicks = 0;
@@ -556,11 +561,29 @@ function checkUpdates(manual) {
   } catch (e) { if (manual) toBar('update', { state: 'error', message: String(e.message || e) }); }
 }
 
+// ---------- keep the process out of Windows' power throttling ----------
+// SCREC sits idle for hours with a keyboard hook installed. If Windows puts an idle background process in
+// "efficiency mode" its hook callbacks get slow and the whole PC's typing feels laggy. Opt out (and keep Chromium's
+// own timers/renderers from backgrounding too).
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+function disablePowerThrottling() {
+  try {
+    const koffi = require('koffi'), k = koffi.load('kernel32.dll');
+    const State = koffi.struct('PROCESS_POWER_THROTTLING_STATE', { Version: 'uint32', ControlMask: 'uint32', StateMask: 'uint32' });
+    const cur = k.func('intptr_t __stdcall GetCurrentProcess()');
+    const setInfo = k.func('bool __stdcall SetProcessInformation(intptr_t h, int cls, PROCESS_POWER_THROTTLING_STATE *info, uint32_t size)');
+    const ok = setInfo(cur(), 4 /* ProcessPowerThrottling */, { Version: 1, ControlMask: 1 /* EXECUTION_SPEED */, StateMask: 0 /* never throttle */ }, 12);
+    if (!ok) console.error('power-throttling opt-out refused');
+  } catch (e) { console.error('power-throttling opt-out failed', e.message); }
+}
+
 // ---------- boot ----------
 app.on('second-instance', () => { if (barWin) barWin.show(); });
 app.whenReady().then(() => {
   if (!gotLock) return; // a second launch: do nothing (no windows, no hooks) while it quits
-  loadSettings(); applyStartup();
+  loadSettings(); applyStartup(); disablePowerThrottling();
   setupDisplayMedia();
   createBar(); createTray(); setupHooks();
   setTimeout(() => checkUpdates(false), 4000);

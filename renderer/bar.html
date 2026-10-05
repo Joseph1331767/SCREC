@@ -25,8 +25,9 @@
     <label class="chk"><input type="checkbox" id="cSys"> Device audio</label>
     <label class="chk"><input type="checkbox" id="cMic"> Microphone</label>
     <label>Mic device <select id="sMic"></select></label>
-    <label class="chk"><input type="checkbox" id="cZoom"> Director hotkeys (hold Ctrl+Alt+Shift)</label>
-    <div class="hint">Mouse = aim box · LMB = zoom to box · wheel = amount · arrows = nudge · RMB = draw / tap for beacon · 1-9 = speed (5 = normal)</div>
+    <label class="chk"><input type="checkbox" id="cZoom"> Director hotkeys</label>
+    <label>Hold to activate <select id="sChord"><option value="alt+shift">Alt + Shift</option><option value="ctrl+alt">Ctrl + Alt</option><option value="ctrl+shift">Ctrl + Shift</option><option value="ctrl+alt+shift">Ctrl + Alt + Shift ⚠</option></select></label>
+    <div class="hint">⚠ Ctrl+Alt+Shift makes screen capture go black on some PCs. Mouse = aim box · LMB = zoom to box · wheel = amount · arrows = nudge · RMB = draw / tap for beacon · 1-9 = speed (5 = normal)</div>
     <label>Zoom amount <span class="rng"><input type="range" id="rZoom" min="1.25" max="6" step="0.25"><b id="vZoom"></b></span></label>
     <label>Mark color <input type="color" id="iCol"></label>
     <label>Mark style <select id="sAnn"><option value="pen">Pen</option><option value="marker">Highlighter</option><option value="glow">Neon glow</option></select></label>
