@@ -14,6 +14,11 @@ Add-Type -Namespace W -Name U -MemberDefinition '
 [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
 [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, System.Text.StringBuilder s, int n);
 [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h, System.Text.StringBuilder s, int n);'
+Add-Type -TypeDefinition @'
+using System; using System.Diagnostics; using System.Runtime.InteropServices;
+public class J { [DllImport("user32.dll")] static extern void mouse_event(uint f, int dx, int dy, int d, UIntPtr e);
+  public static void Run(int ms, int hz) { var sw = Stopwatch.StartNew(); double a = 0, step = 1000.0 / hz, next = 0; while (sw.ElapsedMilliseconds < ms) { if (sw.Elapsed.TotalMilliseconds >= next) { next += step; a += 0.04; mouse_event(1, (int)(Math.Cos(a) * 4), (int)(Math.Sin(a) * 4), 0, UIntPtr.Zero); } } } }
+'@
 [W.U]::SetProcessDPIAware() | Out-Null
 while ($l = [Console]::In.ReadLine()) {
   $p = $l.Split(' ')
@@ -22,6 +27,7 @@ while ($l = [Console]::In.ReadLine()) {
     'K' { $fl = 0; if ($p[2] -eq 'u') { $fl = 2 }; if ($p[3] -eq 'x') { $fl = $fl -bor 1 }; [W.U]::keybd_event([byte][int]$p[1], 0, $fl, [UIntPtr]::Zero) }
     'M' { [W.U]::mouse_event([uint32][int]$p[1], 0, 0, 0, [UIntPtr]::Zero) }
     'F' { $h = [W.U]::GetForegroundWindow(); $sb = New-Object System.Text.StringBuilder 200; $cb = New-Object System.Text.StringBuilder 200; [W.U]::GetWindowText($h, $sb, 200) | Out-Null; [W.U]::GetClassName($h, $cb, 200) | Out-Null; Write-Output ('FG ' + $p[1] + ' class=' + $cb.ToString() + ' title=' + $sb.ToString()) }
+    'J' { [J]::Run([int]$p[1], [int]$p[2]) }
     'W' { [W.U]::mouse_event(2048, 0, 0, [int]$p[1], [UIntPtr]::Zero) }
   }
 }`;
@@ -39,15 +45,15 @@ module.exports = ({ app, barWin, screen, captureImage, beginVideo, hk, act, swal
   const glide = async (x0, y0, x1, y1, ms) => { const n = Math.max(2, Math.round(ms / 40)); for (let i = 1; i <= n; i++) { move(x0 + (x1 - x0) * i / n, y0 + (y1 - y0) * i / n); await sleep(ms / n); } };
 
   // chord / mouse / keys: real OS events or direct handler calls
-  const VK = { ctrl: 0x11, alt: 0x12, shift: 0x10 }, CODE = { ctrl: 29, alt: 56, shift: 42 };
-  const chordKeys = (process.env.SCREC_CHORD || 'alt+shift').split('+'); // must match the app's `chord` setting
-  const chordDown = async () => { if (real) { for (const k of chordKeys) { send(`K ${VK[k]} d`); await sleep(40); } } else chordKeys.forEach(k => hk.keydown(CODE[k])); };
-  const chordUp = async () => { if (real) { for (const k of chordKeys.slice().reverse()) { send(`K ${VK[k]} u`); await sleep(40); } } else chordKeys.slice().reverse().forEach(k => hk.keyup(CODE[k])); };
-  const lmb = down => (real ? send(`M ${down ? 2 : 4}`) : (down ? hk.mousedown(1) : hk.mouseup(1)));
-  const rmb = down => (real ? send(`M ${down ? 8 : 16}`) : (down ? hk.mousedown(2) : hk.mouseup(2)));
-  const wheelUp = () => (real ? send('W 120') : hk.wheel(-1));
-  const arrowRight = async () => { if (real) { send('K 39 d x'); await sleep(40); send('K 39 u x'); } else act(57421); };
-  const digit = async n => { if (real) { send(`K ${0x30 + n} d`); await sleep(40); send(`K ${0x30 + n} u`); } else act(n + 1); };
+  const VK = { ctrl: 0x11, alt: 0x12, shift: 0x10, caps: 0x14 };
+  const chordKeys = (process.env.SCREC_CHORD || 'ctrl+shift+caps').split('+'); // must match the app's `chord` setting
+  const chordDown = async () => { if (real) { for (const k of chordKeys) { send(`K ${VK[k]} d`); await sleep(40); } } else hk.chordStart(); };
+  const chordUp = async () => { if (real) { for (const k of chordKeys.slice().reverse()) { send(`K ${VK[k]} u`); await sleep(40); } } else hk.chordEnd(); };
+  const lmb = down => (real ? send(`M ${down ? 2 : 4}`) : hk.btn(1, down));
+  const rmb = down => (real ? send(`M ${down ? 8 : 16}`) : hk.btn(2, down));
+  const wheelUp = () => (real ? send('W 120') : hk.wheel(true));
+  const arrowRight = async () => { if (real) { send('K 39 d x'); await sleep(40); send('K 39 u x'); } else act('right'); };
+  const digit = async n => { if (real) { send(`K ${0x30 + n} d`); await sleep(40); send(`K ${0x30 + n} u`); } else act(n); };
   const stop = () => barWin.webContents.executeJavaScript("document.getElementById('btnStop').click()");
 
   (async () => {
@@ -87,6 +93,8 @@ module.exports = ({ app, barWin, screen, captureImage, beginVideo, hk, act, swal
         log('diag t+' + (i * 0.5) + 's ' + r); await sleep(500);
       }
     }
+    if (on('jiggle')) { log('jiggle: 1000 Hz real mouse moves for 4 s'); send('J 4000 1000'); await sleep(4500); }
+    if (on('jiggledraw')) { rmb(true); log('jiggle while drawing'); send('J 4000 1000'); await sleep(4500); rmb(false); }
     if (on('barmove')) { for (let i = 0; i < 4; i++) { const b = barWin.getBounds(); barWin.setBounds({ ...b, x: b.x + 30 }); await sleep(300); } log('bar moved'); await sleep(1500); }
     if (on('barsize')) { const b = barWin.getBounds(); barWin.setBounds({ ...b, width: b.width + 40 }); log('bar resized'); await sleep(2500); }
     if (on('movefix1')) { for (let i = 0; i < 3; i++) { const b = barWin.getBounds(); barWin.setBounds({ ...b, x: b.x + 30 }); await sleep(200); } barWin.setContentProtection(false); await sleep(300); barWin.setContentProtection(true); log('toggled protection'); await sleep(3000); }

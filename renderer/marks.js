@@ -11,9 +11,12 @@ class Marks {
     if (m.type === 'start') {
       this.cur = { pts: [{ x: m.x, y: m.y }], style: m.style, t0: now, end: 0, len: 0 };
       this.strokes.push(this.cur);
-    } else if (m.type === 'pt' && this.cur) {
-      const l = this.cur.pts[this.cur.pts.length - 1];
-      this.cur.len += Math.hypot(m.x - l.x, m.y - l.y); this.cur.pts.push({ x: m.x, y: m.y });
+    } else if (m.type === 'pts' && this.cur) { // batched [x0,y0,x1,y1,...]; points closer than ~1.5 px are dropped
+      for (let i = 0; i < m.pts.length; i += 2) {
+        const l = this.cur.pts[this.cur.pts.length - 1], x = m.pts[i], y = m.pts[i + 1], d = Math.hypot(x - l.x, y - l.y);
+        if (d < 1.5) continue;
+        this.cur.len += d; this.cur.pts.push({ x, y });
+      }
     } else if (m.type === 'end' && this.cur) {
       if (now - this.cur.t0 < 320 && this.cur.len < 10) { // a tap -> beacon
         this.beacons.push({ x: this.cur.pts[0].x, y: this.cur.pts[0].y, t0: now, style: this.cur.style });
@@ -40,8 +43,14 @@ class Marks {
     else if (style === 'glow') { ctx.lineWidth = w; ctx.shadowColor = color; ctx.shadowBlur = w * 3; }
     else ctx.lineWidth = w;
     ctx.beginPath();
-    s.pts.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
-    if (s.pts.length === 1) ctx.lineTo(s.pts[0].x + 0.1, s.pts[0].y);
+    const q = s.pts;
+    ctx.moveTo(q[0].x, q[0].y);
+    if (q.length === 1) ctx.lineTo(q[0].x + 0.1, q[0].y);
+    else if (q.length === 2) ctx.lineTo(q[1].x, q[1].y);
+    else {
+      for (let i = 1; i < q.length - 1; i++) ctx.quadraticCurveTo(q[i].x, q[i].y, (q[i].x + q[i + 1].x) / 2, (q[i].y + q[i + 1].y) / 2);
+      ctx.lineTo(q[q.length - 1].x, q[q.length - 1].y);
+    }
     ctx.stroke();
     if (style === 'glow') { ctx.shadowBlur = 0; ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(1, w * 0.35); ctx.globalAlpha = alpha * 0.9; ctx.stroke(); }
     ctx.restore();

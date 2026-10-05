@@ -38,6 +38,7 @@ contextBridge.exposeInMainWorld('api', {
   selectDone: r => ipcRenderer.send('select:done', r),
   // zoom overlay
   zoomHide: () => ipcRenderer.send('zoom:hide'),
+  perf: (name, data) => ipcRenderer.send('perf', name, data),
   onOverlayInit: fn => on('overlay:init', fn),
   onBox: fn => on('box', fn),
   onHud: fn => on('hud', fn),

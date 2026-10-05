@@ -19,7 +19,8 @@ const defaults = {
   micDevice: 'auto',
   startup: true,
   zoom: true,
-  chord: 'alt+shift', // modifiers to hold: alt+shift | ctrl+alt | ctrl+shift | ctrl+alt+shift (the 3-key one blanks screen capture on some PCs)
+  chord: 'ctrl+shift+caps', // keys to hold. Ctrl+Alt+Shift (and Alt+Shift + mouse movement) blank screen capture on some PCs; this one tests clean
+  settingsVersion: 2,
   zoomLevel: 2,
   annotColor: '#ff3b30',
   annotStyle: 'pen', // pen | marker | glow
@@ -30,14 +31,19 @@ const defaults = {
 let settings = { ...defaults };
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json');
 function loadSettings() {
-  try { settings = { ...defaults, ...JSON.parse(fs.readFileSync(settingsFile(), 'utf8')) }; } catch { /* first run */ }
+  try {
+    const saved = JSON.parse(fs.readFileSync(settingsFile(), 'utf8'));
+    settings = { ...defaults, ...saved };
+    // new default chord for everyone, once (compare the SAVED version -- the merge above fills in the default)
+    if (saved.settingsVersion !== defaults.settingsVersion) { settings.chord = defaults.chord; settings.settingsVersion = defaults.settingsVersion; }
+  } catch { /* first run */ }
   if (process.env.SCREC_SELFTEST) settings.saveDir = path.join(app.getPath('videos'), 'SCREC'); // tests never use the real recordings folder
 }
 function saveSettings() {
   try { fs.mkdirSync(path.dirname(settingsFile()), { recursive: true }); fs.writeFileSync(settingsFile(), JSON.stringify(settings, null, 2)); } catch { /* ignore */ }
 }
 function applyStartup() {
-  if (!app.isPackaged) return;
+  if (!app.isPackaged || process.env.SCREC_NO_STARTUP) return; // (smoke tests must not touch the user's login-item entry)
   app.setLoginItemSettings({ openAtLogin: !!settings.startup, args: ['--hidden-start'] });
 }
 
@@ -53,7 +59,8 @@ const stamp = () => {
   const d = new Date(), p = n => String(n).padStart(2, '0');
   return `SCREC_${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
 };
-const toBar = (ch, ...a) => { if (barWin && !barWin.isDestroyed()) barWin.webContents.send(ch, ...a); };
+const perf = require('./perf');
+const toBar = (ch, ...a) => { if (barWin && !barWin.isDestroyed()) { perf.count('ipc>bar:' + ch); barWin.webContents.send(ch, ...a); } };
 
 // ---------- bar ----------
 const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), Math.max(lo, hi));
@@ -75,7 +82,7 @@ function createBar() {
   });
   barWin.setAlwaysOnTop(true, 'screen-saver');
   barWin.setContentProtection(true); // keep the bar out of recordings
-  barWin.loadFile(path.join(__dirname, 'renderer', 'bar.html'));
+  barWin.loadFile(path.join(__dirname, 'renderer', 'bar.html'), { query: perf.on ? { perf: '1' } : {} });
   barWin.once('ready-to-show', () => barWin.show());
 }
 
@@ -128,6 +135,7 @@ function createTray() {
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Show bar', click: () => { barWin.show(); } },
     { label: 'Check for updates', click: () => checkUpdates(true) },
+    { label: 'Performance log (perf.log)', type: 'checkbox', checked: perf.on, click: m => { if (m.checked) perf.start(app.getPath('userData')); else perf.stop(); if (input) input.config(inputCfg()); } },
     { type: 'separator' },
     { label: 'Quit', click: () => app.quit() },
   ]));
@@ -229,6 +237,7 @@ ipcMain.handle('rec:open', (_e, ext) => {
   recStream = fs.createWriteStream(recPath);
   return recPath;
 });
+ipcMain.on('perf', (_e, name, data) => perf.report(name, data));
 ipcMain.handle('rec:chunk', (_e, buf) => new Promise(res => recStream.write(Buffer.from(buf), () => res())));
 ipcMain.on('rec:cancelBake', () => { try { require('./render').cancel(); } catch { /* ignore */ } });
 ipcMain.handle('rec:finish', async (_e, opts) => {
@@ -251,6 +260,7 @@ ipcMain.handle('rec:finish', async (_e, opts) => {
 ipcMain.handle('settings:get', () => ({ ...settings, version: app.getVersion(), packaged: app.isPackaged }));
 ipcMain.handle('settings:set', (_e, patch) => {
   settings = { ...settings, ...patch };
+  if (input) input.config(inputCfg());
   saveSettings(); applyStartup();
   return settings;
 });
@@ -292,11 +302,9 @@ ipcMain.on('file:copyPath', (_e, f) => clipboard.writeText(f));
 // marks into the video itself, so viewers see the zoom and marks but never the aim box/HUD.
 // (setIgnoreMouseEvents would silently disable the exclusion; input is swallowed by hooks.js instead.)
 const SPEEDS = [0.25, 0.4, 0.6, 0.8, 1, 1.5, 2, 3, 4];
-const K = { ctrl: [29, 3613], alt: [56, 3640], shift: [42, 54], left: 57419, right: 57421, up: 57416, down: 57424 };
-const down = new Set();
-let chord = false, chordTimer = null, directing = false, dirTimer = null, pendingUnhook = false;
+let chord = false, chordTimer = null, directing = false, dirTimer = null;
 let overlayDisplay = null, ovWin = null, barHidden = false;
-let lmb = false, rmb = false, rmbTimer = null, rmbLast = null;
+let lmb = false, rmb = false, rmbLast = null, rmbPts = [];
 let off = { x: 0, y: 0 };
 let recRegion = null, pendingRegion = null;
 
@@ -336,10 +344,10 @@ function ensureOverlay(d) {
   ovWin.setAlwaysOnTop(true, 'screen-saver');
   ovWin.setContentProtection(true); // must NOT use setIgnoreMouseEvents, or exclusion silently stops working
   markTransparent(ovWin);
-  ovWin.loadFile(path.join(__dirname, 'renderer', 'overlay.html'));
+  ovWin.loadFile(path.join(__dirname, 'renderer', 'overlay.html'), { query: perf.on ? { perf: '1' } : {} });
   ovWin.webContents.once('did-finish-load', () => ovWin.webContents.send('overlay:init', { x: d.bounds.x, y: d.bounds.y, width: d.bounds.width, height: d.bounds.height }));
 }
-const sendBox = (ch, msg) => { if (ovWin && !ovWin.isDestroyed()) ovWin.webContents.send(ch, msg); };
+const sendBox = (ch, msg) => { if (ovWin && !ovWin.isDestroyed()) { perf.count('ipc>ov:' + ch); ovWin.webContents.send(ch, msg); } };
 const sendAnno = msg => { sendBox('anno', msg); if (recRegion) toBar('anno', msg); };
 
 function viewBounds() { return recRegion || overlayDisplay.bounds; }
@@ -353,10 +361,13 @@ function computeBox() {
     width: w, height: h,
   };
 }
+const TICK_MS = 16; // one uniform 60 Hz tick drives the box, the recorder's zoom target and stroke sampling
 function directTick() {
+  sampleStroke();
   const box = computeBox(), d = overlayDisplay;
   sendBox('box', { x: box.x - d.bounds.x, y: box.y - d.bounds.y, width: box.width, height: box.height, active: lmb, level: settings.zoomLevel || 2 });
   if (recRegion) toBar('zoom:state', { active: lmb, box });
+  flushStroke();
 }
 const hud = text => sendBox('hud', text);
 
@@ -370,7 +381,7 @@ function enterDirector() {
     ovWin.showInactive();
     directTick();
     clearInterval(dirTimer);
-    dirTimer = setInterval(directTick, 8);
+    dirTimer = setInterval(directTick, TICK_MS);
   } catch (e) { // never leave a half-entered director behind (no timer, no overlay, bar hidden)
     console.error('director failed to start', e);
     directing = false; clearInterval(dirTimer); dirTimer = null;
@@ -394,18 +405,22 @@ function startStroke() {
   if (rmb || !directing) return;
   rmb = true;
   const p = screen.getCursorScreenPoint();
-  rmbLast = p;
+  rmbLast = p; rmbPts = [];
   sendAnno({ type: 'start', x: p.x, y: p.y, style: { color: settings.annotColor, style: settings.annotStyle, size: settings.annotSize } });
-  rmbTimer = setInterval(() => {
-    const c = screen.getCursorScreenPoint();
-    if (c.x === rmbLast.x && c.y === rmbLast.y) return;
-    rmbLast = c; sendAnno({ type: 'pt', x: c.x, y: c.y });
-  }, 8);
 }
 function endStroke() {
   if (!rmb) return;
-  rmb = false; clearInterval(rmbTimer); rmbTimer = null;
+  rmb = false; flushStroke();
   sendAnno({ type: 'end' });
+}
+// Stroke points are sampled once per director tick and sent as ONE batched message (uniform rate, no per-point IPC).
+function sampleStroke() {
+  if (!rmb) return;
+  const c = screen.getCursorScreenPoint();
+  if (c.x !== rmbLast.x || c.y !== rmbLast.y) { rmbLast = c; rmbPts.push(c.x, c.y); }
+}
+function flushStroke() {
+  if (rmbPts.length) { sendAnno({ type: 'pts', pts: rmbPts }); rmbPts = []; }
 }
 
 function setLevel(delta) {
@@ -424,100 +439,28 @@ function setSpeed(n) {
 // While the chord is held, arrows, 1-9 and the mouse buttons belong to SCREC: they are swallowed by a
 // low-level hook so games/apps never see them (and no window ever receives the click -- a click delivered
 // to our topmost overlay makes Windows capture of hardware video go black/white).
-const ACT_KEYS = new Set([K.left, K.right, K.up, K.down, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-function act(code) {
-  if (code === K.left || code === K.right || code === K.up || code === K.down) {
-    if (!directing) return;
-    const step = 10;
-    if (code === K.left) off.x -= step; else if (code === K.right) off.x += step;
-    else if (code === K.up) off.y -= step; else off.y += step;
-  } else if (code >= 2 && code <= 10) setSpeed(code - 1);
-}
-const MODS = ['ctrl', 'alt', 'shift'];
-const has = g => K[g].some(k => down.has(k));
-const chordMods = () => {
-  const m = String(settings.chord || 'alt+shift').split('+').filter(x => MODS.includes(x));
-  return m.length >= 2 ? m : ['alt', 'shift'];
-};
-const combo = () => chordMods().every(has);
-const heldKeys = new Set(), heldButtons = new Set(); // swallowed DOWNs, so the matching UP is swallowed too
-
-// The OS's real modifier state (null = unknown: hooks unavailable, or the selftest driving hk directly).
-const selftestSynthetic = !!process.env.SCREC_SELFTEST && !process.env.SCREC_SELFTEST_REAL;
-function physMods() {
-  if (selftestSynthetic || !hooks) return null;
-  try { return hooks.mods(); } catch { return null; }
-}
-// Hook events can be lost (secure desktop, UAC, Win+L, a hook timeout). Forget modifiers the keyboard no longer
-// holds, so a stale entry can never combine with one fresh key press into a false chord. `except` = key being pressed
-// right now (its physical state is not updated yet while its own hook callback runs).
-function dropStaleMods(except) {
-  const p = physMods(); if (!p) return;
-  for (const g of MODS) if (!p[g] && !K[g].includes(except)) K[g].forEach(k => down.delete(k));
-}
-// Chord over: drop the mouse hook, but only after every swallowed button has come up (else its UP would leak
-// to the app under the cursor, e.g. an orphan right-button-up pops a context menu).
-function endMouse() {
-  if (heldButtons.size) { pendingUnhook = true; return; }
-  pendingUnhook = false;
-  if (hooks) hooks.stopMouse();
-}
-function forceRelease(why) {
-  console.error('chord force-released:', why);
-  chord = false; dropStaleMods(-1); heldKeys.clear();
-  endMouse();
-  exitDirector();
-}
-// Watchdog: the real keyboard/mouse state is the source of truth for the chord.
-let badTicks = 0, idleTicks = 0;
-function watchdog() {
-  const p = chord ? physMods() : null; // idle: no polling at all
-  if (chord && p && !chordMods().every(g => p[g])) { if (++badTicks >= 2) { badTicks = 0; forceRelease('modifier released without a key-up'); } } else badTicks = 0;
-  if (pendingUnhook && hooks) { // a swallowed button whose UP never arrived (it is physically up) must not keep the hook alive
-    if (!hooks.buttonsDown()) { if (++idleTicks >= 2) { idleTicks = 0; heldButtons.clear(); pendingUnhook = false; hooks.stopMouse(); } } else idleTicks = 0;
-  } else idleTicks = 0;
+function act(key) { // 'left' | 'right' | 'up' | 'down' | 1..9
+  if (typeof key === 'number') { setSpeed(key); return; }
+  if (!directing) return;
+  const step = 10;
+  if (key === 'left') off.x -= step; else if (key === 'right') off.x += step; else if (key === 'up') off.y -= step; else if (key === 'down') off.y += step;
 }
 
-// Each handler returns true when the event must be swallowed.
-const hk = {
-  keydown(code) {
-    const fresh = !down.has(code); // first DOWN of this physical press (auto-repeats are not fresh)
-    down.add(code);
-    if (!chord && combo()) dropStaleMods(code);
-    if (combo() && !chord) { chord = true; pendingUnhook = false; if (settings.zoom && hooks) hooks.startMouse(); chordTimer = setTimeout(() => { if (chord) enterDirector(); }, 100); }
-    if (!ACT_KEYS.has(code)) return false;
-    // Decide once per press: a key whose first DOWN reached the app is never swallowed (neither repeats nor the UP),
-    // a key whose first DOWN was swallowed stays swallowed until its UP, even if the chord ends first. Both halves
-    // of a press go to the same place, so nothing ever sticks.
-    if (fresh) { if (chord && settings.zoom) heldKeys.add(code); else heldKeys.delete(code); }
-    if (!heldKeys.has(code)) return false;
-    if (chord) act(code);
-    return true;
-  },
-  keyup(code) {
-    down.delete(code);
-    if (chord && !combo()) {
-      chord = false; endMouse();
-      setImmediate(() => { if (!chord) exitDirector(); }); // keep window work out of the hook callback (hook timeout)
-    }
-    return heldKeys.delete(code);
-  },
-  mousedown(btn) {
-    if (!chord || !settings.zoom) return false;
-    heldButtons.add(btn);
-    if (directing) { if (btn === 1) lmb = true; else if (btn === 2) startStroke(); }
-    return true;
-  },
-  mouseup(btn) {
-    if (btn === 1 && lmb) { lmb = false; if (recRegion) toBar('zoom:state', { active: false, box: null }); }
-    else if (btn === 2) endStroke();
-    const swallow = heldButtons.delete(btn);
-    if (pendingUnhook && !heldButtons.size) setImmediate(() => { if (pendingUnhook && !heldButtons.size) { pendingUnhook = false; if (hooks) hooks.stopMouse(); } });
-    return swallow;
-  },
-  wheel(rotation) { if (!directing || !rotation || !settings.zoom) return false; setLevel(rotation < 0 ? 0.25 : -0.25); return true; },
-  hwheel() { return directing && settings.zoom; },
-};
+// Chord / button / wheel events arrive from the input worker (its own thread, see inputworker.js).
+function chordEvent(on) {
+  clearTimeout(chordTimer);
+  if (on) { chord = true; chordTimer = setTimeout(() => { if (chord) enterDirector(); }, 100); }
+  else { chord = false; setImmediate(() => { if (!chord) exitDirector(); }); }
+}
+function buttonEvent(btn, isDown) {
+  if (!directing) return;
+  if (isDown) { if (btn === 1) lmb = true; else if (btn === 2) startStroke(); }
+  else if (btn === 1 && lmb) { lmb = false; if (recRegion) toBar('zoom:state', { active: false, box: null }); }
+  else if (btn === 2) endStroke();
+}
+function wheelEvent(up) { if (directing) setLevel(up ? 0.25 : -0.25); }
+// same events, driven directly by the selftest when it doesn't inject real input
+const hk = { chordStart: () => chordEvent(true), chordEnd: () => chordEvent(false), btn: buttonEvent, wheel: wheelEvent };
 
 ipcMain.on('rec:capturing', () => { capturing = true; });
 ipcMain.on('rec:state', (_e, recording) => {
@@ -526,20 +469,17 @@ ipcMain.on('rec:state', (_e, recording) => {
   if (!recording) toBar('zoom:state', { active: false, box: null });
 });
 
-// Windows virtual-key -> internal key codes
-const VK = { 0xA0: 42, 0xA1: 54, 0xA2: 29, 0xA3: 3613, 0xA4: 56, 0xA5: 3640, 0x25: K.left, 0x26: K.up, 0x27: K.right, 0x28: K.down };
-for (let n = 1; n <= 9; n++) VK[0x30 + n] = n + 1;
-let hooks = null;
+let input = null;
+const inputCfg = () => ({ zoom: settings.zoom, chord: settings.chord, perf: perf.on });
 function setupHooks() {
   try {
-    hooks = require('./hooks').start({
-      onKey: (vk, isDown) => { const c = VK[vk]; return c == null ? false : (isDown ? hk.keydown(c) : hk.keyup(c)); },
-      onButton: (btn, isDown) => (isDown ? hk.mousedown(btn) : hk.mouseup(btn)),
-      onWheel: delta => hk.wheel(-delta),
-      onHWheel: () => hk.hwheel(),
-    });
+    input = require('./input').start({
+      onChord: chordEvent, onAct: act, onBtn: buttonEvent, onWheel: wheelEvent,
+      onPerf: d => perf.report('input', d),
+      onReady: () => { if (process.env.SCREC_SMOKE) console.log('[smoke] input worker ready'); },
+      onError: m => console.error('input hooks unavailable:', m),
+    }, inputCfg());
   } catch (e) { console.error('input hooks unavailable', e); }
-  setInterval(watchdog, 150);
   setTimeout(() => { if (!directing) ensureOverlay(pickDisplay()); }, 2500); // pre-warm so the first press is instant
 }
 
@@ -584,12 +524,14 @@ app.on('second-instance', () => { if (barWin) barWin.show(); });
 app.whenReady().then(() => {
   if (!gotLock) return; // a second launch: do nothing (no windows, no hooks) while it quits
   loadSettings(); applyStartup(); disablePowerThrottling();
+  if (process.env.SCREC_PERF) perf.start(process.env.SCREC_SELFTEST ? null : app.getPath('userData'));
   setupDisplayMedia();
   createBar(); createTray(); setupHooks();
   setTimeout(() => checkUpdates(false), 4000);
-  if (process.env.SCREC_SELFTEST) require('./scripts/selftest')({ app, barWin, screen, startSelect, beginVideo, captureImage, ipcMain, hk, act, swallowed: () => heldKeys.size + heldButtons.size, getSettings: () => settings });
+  if (process.env.SCREC_SMOKE) setTimeout(() => app.quit(), 7000);
+  if (process.env.SCREC_SELFTEST) require('./scripts/selftest')({ app, barWin, screen, startSelect, beginVideo, captureImage, ipcMain, hk, act, swallowed: () => 0, getSettings: () => settings });
 });
 app.on('window-all-closed', e => e.preventDefault());
 app.on('will-quit', () => {
   try { require('./render').cancel(); } catch { /* ignore */ } 
-  try { hooks && hooks.stop(); } catch { /* ignore */ } if (setLevel.t) { clearTimeout(setLevel.t); saveSettings(); } });
+  try { input && input.stop(); } catch { /* ignore */ } if (setLevel.t) { clearTimeout(setLevel.t); saveSettings(); } });

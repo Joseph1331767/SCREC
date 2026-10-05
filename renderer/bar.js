@@ -2,7 +2,10 @@ const $ = id => document.getElementById(id);
 let S = {};            // settings
 let rec = null;        // active recording session
 const marks = new Marks();
-api.onAnno(m => marks.handle(m));
+const PERF = /perf=1/.test(location.search);
+const P = { draws: 0, sum: 0, max: 0, zoomEv: 0, annoEv: 0, gap: 0, lastDraw: 0 };
+if (PERF) setInterval(() => { if (P.draws || P.zoomEv || P.annoEv) api.perf('rec', { draws: P.draws, avgMs: P.draws ? +(P.sum / P.draws).toFixed(2) : 0, maxMs: +P.max.toFixed(1), maxGapMs: Math.round(P.gap), zoomEv: P.zoomEv, annoEv: P.annoEv }); P.draws = P.sum = P.max = P.zoomEv = P.annoEv = P.gap = 0; }, 1000);
+api.onAnno(m => { P.annoEv++; marks.handle(m); });
 let zoomCb = null;
 api.onZoom(s => zoomCb && zoomCb(s));
 let speedCb = null;
@@ -37,7 +40,7 @@ bind('sRes', 'resolution', e => e.value); bind('sFit', 'fit', e => e.value); bin
 bind('cSys', 'system', e => e.checked); bind('cMic', 'mic', e => e.checked); bind('cZoom', 'zoom', e => e.checked);
 bind('cStart', 'startup', e => e.checked);
 function syncMarks() {
-  $('sChord').value = S.chord || 'alt+shift'; $('rZoom').value = S.zoomLevel; $('vZoom').textContent = S.zoomLevel + '×';
+  $('sChord').value = S.chord || 'ctrl+shift+caps'; $('rZoom').value = S.zoomLevel; $('vZoom').textContent = S.zoomLevel + '×';
   $('iCol').value = S.annotColor; $('sAnn').value = S.annotStyle; $('rSize').value = S.annotSize; $('vSize').textContent = S.annotSize;
 }
 bind('sChord', 'chord', e => e.value); bind('rZoom', 'zoomLevel', e => +e.value); bind('iCol', 'annotColor', e => e.value);
@@ -149,11 +152,13 @@ async function startRecording({ region, display, settings }) {
   const full = { x: bx, y: by, w: bw, h: bh };
   let curR = { ...full }, tgtR = { ...full }, lastT = performance.now();
   zoomCb = s => {
+    P.zoomEv++;
     if (!s.active || !s.box) { tgtR = { ...full }; return; }
     const fx = (s.box.x - region.x) / region.width, fy = (s.box.y - region.y) / region.height;
     tgtR = { x: bx + fx * bw, y: by + fy * bh, w: (s.box.width / region.width) * bw, h: (s.box.height / region.height) * bh };
   };
   const draw = () => {
+    const t0 = performance.now(); if (P.lastDraw) P.gap = Math.max(P.gap, t0 - P.lastDraw); P.lastDraw = t0;
     const now = performance.now(), a = 1 - Math.exp(-(now - lastT) / 110); lastT = now;
     for (const k of ['x', 'y', 'w', 'h']) curR[k] += (tgtR[k] - curR[k]) * a;
     if (dx || dy) { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, ow, oh); }
@@ -167,6 +172,7 @@ async function startRecording({ region, display, settings }) {
       ctx.restore();
     }
     vtrack.requestFrame && vtrack.requestFrame();
+    if (PERF) { const dt = performance.now() - t0; P.draws++; P.sum += dt; if (dt > P.max) P.max = dt; }
   };
   const timer = setInterval(draw, 1000 / fps);
 
