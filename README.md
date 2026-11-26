@@ -37,3 +37,6 @@ Bump `version` in package.json, `npm run dist`, then upload `dist/latest.yml`, `
 > Performance log: tray menu → *Performance log*, or `SCREC_PERF=1`; writes `perf.log` (main-thread lag, IPC rates, overlay fps, recorder draw times, hook latency).
 
 > **Why not Ctrl+Alt+Shift?** On at least one PC, holding all three modifiers makes screen capture return black frames (the real screen is fine) even with SCREC not involved. Any two of them are fine, so the default is Alt+Shift; Ctrl+Alt and Ctrl+Shift are available too.
+
+## Capture buttons
+Video · Image (**right-click = copy to clipboard only, nothing saved**) · Audio-only (device audio + auto-picked headset mic → `.m4a`) · **Recent** (appears after a capture; the result panel hides itself after 3 s and lives under it — keeps the last 8, ‹ › to browse).

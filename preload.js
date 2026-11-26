@@ -27,6 +27,8 @@ contextBridge.exposeInMainWorld('api', {
   moveFile: f => ipcRenderer.invoke('file:move', f),
   reveal: f => ipcRenderer.send('file:reveal', f),
   deleteFile: f => ipcRenderer.send('file:delete', f),
+  captureAudio: () => ipcRenderer.send('capture:audio'),
+  onInfo: fn => on('info', fn),
   copyImage: f => ipcRenderer.send('file:copyImage', f),
   copyPath: f => ipcRenderer.send('file:copyPath', f),
   onRecStart: fn => on('rec:start', fn),

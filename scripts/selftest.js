@@ -12,6 +12,7 @@ Add-Type -Namespace W -Name U -MemberDefinition '
 [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
 [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
 [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+[DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr h, int x, int y, int w, int ht, bool repaint);
 [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, System.Text.StringBuilder s, int n);
 [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h, System.Text.StringBuilder s, int n);'
 Add-Type -TypeDefinition @'
@@ -28,11 +29,12 @@ while ($l = [Console]::In.ReadLine()) {
     'M' { [W.U]::mouse_event([uint32][int]$p[1], 0, 0, 0, [UIntPtr]::Zero) }
     'F' { $h = [W.U]::GetForegroundWindow(); $sb = New-Object System.Text.StringBuilder 200; $cb = New-Object System.Text.StringBuilder 200; [W.U]::GetWindowText($h, $sb, 200) | Out-Null; [W.U]::GetClassName($h, $cb, 200) | Out-Null; Write-Output ('FG ' + $p[1] + ' class=' + $cb.ToString() + ' title=' + $sb.ToString()) }
     'J' { [J]::Run([int]$p[1], [int]$p[2]) }
+    'MV' { $w = Get-Process chrome -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -match 'Big Buck|YouTube|static|bright' } | Select-Object -First 1; if ($w) { [W.U]::MoveWindow($w.MainWindowHandle, [int]$p[1], [int]$p[2], [int]$p[3], [int]$p[4], $true) | Out-Null } }
     'W' { [W.U]::mouse_event(2048, 0, 0, [int]$p[1], [UIntPtr]::Zero) }
   }
 }`;
 
-module.exports = ({ app, barWin, screen, captureImage, beginVideo, hk, act, swallowed }) => {
+module.exports = ({ app, barWin, screen, captureImage, beginVideo, hk, act, swallowed, ipcMain }) => {
   const d = screen.getPrimaryDisplay();
   const sf = d.scaleFactor;
   const real = !!process.env.SCREC_SELFTEST_REAL;
@@ -57,12 +59,30 @@ module.exports = ({ app, barWin, screen, captureImage, beginVideo, hk, act, swal
   const stop = () => barWin.webContents.executeJavaScript("document.getElementById('btnStop').click()");
 
   (async () => {
+    if (process.env.SCREC_ST_COPY) { // copy-only capture + Copy button
+      const { clipboard } = require('electron'); await sleep(2500); clipboard.clear();
+      await captureImage(d, { x: 100, y: 100, width: 300, height: 200 }, true);
+      log('right-click copy -> clipboard formats: ' + (await clipboard.read()).map(i => i.types.join('|')).join(',') + ' | files saved: ' + (fs.existsSync(app.getPath('videos') + '/SCREC') ? fs.readdirSync(app.getPath('videos') + '/SCREC').length : 0));
+      await captureImage(d, { x: 100, y: 100, width: 300, height: 200 }); const f = fs.readdirSync(app.getPath('videos') + '/SCREC').find(x => x.endsWith('.png')); clipboard.clear();
+      ipcMain.emit('file:copyImage', {}, app.getPath('videos') + '/SCREC/' + f); await sleep(800); log('Copy button -> clipboard formats: ' + (await clipboard.read()).map(i => i.types.join('|')).join(','));
+      ps.kill(); app.quit(); return;
+    }
+    if (process.env.SCREC_ST_AUDIO) { // audio-only capture smoke test
+      await sleep(3000); ipcMain.emit('capture:audio'); await sleep(5000); log('audio recording ' + (await barWin.webContents.executeJavaScript("document.getElementById('timer').textContent")));
+      await stop(); await sleep(3000); log('files: ' + fs.readdirSync(app.getPath('videos') + '/SCREC').join(', '));
+      log('recent btn visible: ' + (await barWin.webContents.executeJavaScript("!document.getElementById('btnRecent').classList.contains('hidden')")));
+      await sleep(3500); log('result panel auto-hidden: ' + (await barWin.webContents.executeJavaScript("document.getElementById('result').classList.contains('hidden')")));
+      ps.kill(); app.quit(); return;
+    }
     let chrome = null;
     if (process.env.SCREC_SELFTEST_CHROME) {
       const u = process.env.SCREC_SELFTEST_CHROME;
       chrome = spawn('C:/Program Files/Google/Chrome/Application/chrome.exe', ['--user-data-dir=' + require('path').join(app.getPath('temp'), 'st-chrome'), '--no-first-run',
-        '--app=' + (u.startsWith('http') ? '' : 'file:///') + u, '--window-position=0,0', '--window-size=1700,1000', '--autoplay-policy=no-user-gesture-required']);
+        '--app=' + (u.startsWith('http') ? '' : 'file:///') + u, ...(process.env.SCREC_CHROME_MOVE ? ['--window-position=2700,100', '--window-size=1280,760'] : ['--window-position=0,0', '--window-size=1700,1000']), '--autoplay-policy=no-user-gesture-required']);
       await sleep(9000);
+      if (process.env.SCREC_CHROME_MOVE) { // drag the window from screen 2 onto screen 1, like the user did
+        send('MV 100 100 1500 900'); await sleep(2500); log('moved Chrome from screen 2 to screen 1');
+      }
     }
     await sleep(3000);
     log(`display ${d.bounds.width}x${d.bounds.height} scale ${sf} real=${real}`);

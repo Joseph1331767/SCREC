@@ -5,6 +5,8 @@
     <div id="idle" class="grp">
       <button id="btnVid" class="ib rec" title="Record video"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7" fill="currentColor"/></svg></button>
       <button id="btnImg" class="ib" title="Screenshot"><svg viewBox="0 0 24 24"><path d="M3 8h4l2-3h6l2 3h4v11H3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="13.5" r="3.5" fill="none" stroke="currentColor" stroke-width="2"/></svg></button>
+      <button id="btnAud" class="ib" title="Record audio only (device + mic)"><svg viewBox="0 0 24 24"><path d="M4 15v-3a8 8 0 0 1 16 0v3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><rect x="3" y="14" width="4" height="6" rx="1.5" fill="currentColor"/><rect x="17" y="14" width="4" height="6" rx="1.5" fill="currentColor"/></svg></button>
+      <button id="btnRecent" class="ib hidden" title="Recent captures"><svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.6-5.9M4 4v4h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 8v4l3 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
       <button id="btnSet" class="ib" title="Settings"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="16" cy="7" r="2.5" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="8" cy="17" r="2.5" fill="none" stroke="currentColor" stroke-width="2"/></svg></button>
     </div>
     <div id="recing" class="grp hidden">
@@ -41,6 +43,7 @@
     <div id="preview"></div>
     <div id="rname"></div>
     <div class="btns">
+      <button id="rPrev" class="small hidden" title="Older">‹</button><button id="rNext" class="small hidden" title="Newer">›</button>
       <button id="rMove" class="small primary">Move to…</button>
       <button id="rOpen" class="small">Show</button>
       <button id="rCopy" class="small">Copy</button>

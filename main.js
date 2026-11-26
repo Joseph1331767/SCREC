@@ -37,7 +37,10 @@ function loadSettings() {
     // new default chord for everyone, once (compare the SAVED version -- the merge above fills in the default)
     if (saved.settingsVersion !== defaults.settingsVersion) { settings.chord = defaults.chord; settings.settingsVersion = defaults.settingsVersion; }
   } catch { /* first run */ }
-  if (process.env.SCREC_SELFTEST) settings.saveDir = path.join(app.getPath('videos'), 'SCREC'); // tests never use the real recordings folder
+  if (process.env.SCREC_SELFTEST) { // tests never use the real recordings folder, and may force a chord
+    settings.saveDir = path.join(app.getPath('videos'), 'SCREC');
+    if (process.env.SCREC_CHORD) settings.chord = process.env.SCREC_CHORD;
+  }
 }
 function saveSettings() {
   try { fs.mkdirSync(path.dirname(settingsFile()), { recursive: true }); fs.writeFileSync(settingsFile(), JSON.stringify(settings, null, 2)); } catch { /* ignore */ }
@@ -172,7 +175,7 @@ ipcMain.on('select:done', async (e, rect) => {
   if (!w || !rect) { barWin.show(); return; }
   await new Promise(r => setTimeout(r, 200)); // let the dim overlay vanish
   try {
-    if (kind === 'image') await captureImage(w.display, rect);
+    if (kind === 'image' || kind === 'image-copy') await captureImage(w.display, rect, kind === 'image-copy');
     else await beginVideo(w.display, rect);
   } catch (err) {
     barWin.show();
@@ -190,7 +193,7 @@ async function sourceFor(display, noThumb) {
   const idx = screen.getAllDisplays().findIndex(d => d.id === display.id);
   return sources.find(s => s.display_id === String(display.id)) || sources[idx] || sources[0];
 }
-async function captureImage(display, rect) {
+async function captureImage(display, rect, copyOnly) {
   const src = await sourceFor(display);
   const sf = display.scaleFactor;
   const crop = {
@@ -198,6 +201,11 @@ async function captureImage(display, rect) {
     width: Math.max(1, Math.round(rect.width * sf)), height: Math.max(1, Math.round(rect.height * sf)),
   };
   const img = src.thumbnail.crop(crop);
+  if (copyOnly) { // right-click on the screenshot button: clipboard only, nothing saved
+    barWin.show();
+    try { await copyImageToClipboard(img); toBar('info', 'Copied to clipboard'); } catch (e) { toBar('error', 'Copy failed: ' + e.message); }
+    return;
+  }
   fs.mkdirSync(settings.saveDir, { recursive: true });
   const file = path.join(settings.saveDir, stamp() + '.png');
   fs.writeFileSync(file, img.toPNG());
@@ -253,7 +261,7 @@ ipcMain.handle('rec:finish', async (_e, opts) => {
         : 'Speed render failed — kept the raw recording. ' + e.message);
     }
   }
-  return { kind: 'video', file: out, name: path.basename(out) };
+  return { kind: opts && opts.kind === 'audio' ? 'audio' : 'video', file: out, name: path.basename(out) };
 });
 
 // ---------- settings / result actions ----------
@@ -271,6 +279,13 @@ ipcMain.handle('settings:pickDir', async () => {
   return settings.saveDir;
 });
 ipcMain.on('capture:start', (_e, kind) => startSelect(kind));
+// Audio-only capture: no region to pick. Device audio (loopback of the primary display) + mic, per the settings.
+ipcMain.on('capture:audio', () => {
+  const d = screen.getPrimaryDisplay();
+  pendingDisplayId = String(d.id); pendingSystemAudio = !!settings.system; pendingRegion = null;
+  barWin.show();
+  toBar('rec:start', { audioOnly: true, display: { x: d.bounds.x, y: d.bounds.y, width: d.bounds.width, height: d.bounds.height, scale: d.scaleFactor }, settings });
+});
 ipcMain.on('app:quit', () => app.quit());
 ipcMain.on('app:minimize', () => barWin.hide());
 ipcMain.on('app:checkUpdates', () => checkUpdates(true));
@@ -292,7 +307,12 @@ ipcMain.handle('file:move', async (_e, file) => {
 });
 ipcMain.on('file:reveal', (_e, f) => shell.showItemInFolder(f));
 ipcMain.on('file:delete', (_e, f) => { try { fs.unlinkSync(f); } catch { /* ignore */ } });
-ipcMain.on('file:copyImage', (_e, f) => clipboard.writeImage(nativeImage.createFromPath(f)));
+// Electron 44: the old clipboard.writeImage is gone; images go through the async ClipboardItem API.
+async function copyImageToClipboard(img) {
+  const { ClipboardItem } = require('electron');
+  await clipboard.write([new ClipboardItem({ 'image/png': new Blob([img.toPNG()], { type: 'image/png' }) })]);
+}
+ipcMain.on('file:copyImage', (_e, f) => copyImageToClipboard(nativeImage.createFromPath(f)).then(() => toBar('info', 'Copied to clipboard')).catch(e => toBar('error', 'Copy failed: ' + e.message)));
 ipcMain.on('file:copyPath', (_e, f) => clipboard.writeText(f));
 
 // ---------- director hotkeys (hold Ctrl+Alt+Shift) ----------

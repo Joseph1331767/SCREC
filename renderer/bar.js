@@ -93,15 +93,17 @@ async function fillMics() {
 navigator.mediaDevices.addEventListener('devicechange', () => fillMics());
 
 // ---------- capture buttons ----------
-$('btnImg').onclick = () => { toast(''); show('result', false); api.capture('image'); };
-$('btnVid').onclick = () => { toast(''); show('result', false); api.capture('video'); };
+$('btnImg').onclick = () => { toast(''); closeResult(); api.capture('image'); };
+$('btnImg').oncontextmenu = e => { e.preventDefault(); toast(''); closeResult(); api.capture('image-copy'); }; // right-click: copy only, no file
+$('btnVid').onclick = () => { toast(''); closeResult(); api.capture('video'); };
+$('btnAud').onclick = () => { toast(''); closeResult(); api.captureAudio(); };
 
 // ---------- recording ----------
 const MIMES = ['video/mp4;codecs=avc1,mp4a.40.2', 'video/mp4', 'video/webm;codecs=h264,opus', 'video/webm;codecs=vp9,opus', 'video/webm'];
 const even = n => Math.max(2, Math.round(n / 2) * 2);
 
 api.onRecStart(async cfg => {
-  try { await startRecording(cfg); }
+  try { await (cfg.audioOnly ? startAudio(cfg) : startRecording(cfg)); }
   catch (e) { toast('Could not start: ' + (e && e.message || e)); await teardown(); }
 });
 
@@ -211,6 +213,40 @@ async function startRecording({ region, display, settings }) {
   updateTimer();
 }
 
+// Audio-only capture: loopback audio comes from getDisplayMedia (the video track is discarded) + the auto-picked mic.
+const AUDIO_MIMES = ['audio/mp4;codecs=mp4a.40.2', 'audio/mp4', 'audio/webm;codecs=opus', 'audio/webm'];
+async function startAudio({ settings }) {
+  S = settings;
+  show('panel', false); show('result', false); toast(''); show('idle', false); show('recing', true);
+  $('app').classList.add('recording'); $('timer').textContent = '00:00'; setBadge(1); setPaused(false);
+  await new Promise(r => setTimeout(r, 300));
+  api.recCapturing();
+  const ds = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: !!S.system });
+  ds.getVideoTracks().forEach(t => t.stop()); // only the audio is wanted
+  const ac = new AudioContext(), dest = ac.createMediaStreamDestination(), micStream = [];
+  let n = 0, warn = '';
+  const sys = ds.getAudioTracks();
+  if (sys.length) { ac.createMediaStreamSource(new MediaStream(sys)).connect(dest); n++; }
+  if (S.mic) {
+    try {
+      const mic = pickMic(await listMics());
+      const ms = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: mic ? { exact: mic.deviceId } : undefined, echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+      micStream.push(ms); ac.createMediaStreamSource(ms).connect(dest); n++;
+    } catch (e) { warn = 'Mic unavailable: ' + e.message; }
+  }
+  if (!n) { ds.getTracks().forEach(t => t.stop()); await ac.close(); throw new Error('no audio source - enable Device audio or Microphone in settings'); }
+  const mime = AUDIO_MIMES.find(m => MediaRecorder.isTypeSupported(m)) || '';
+  const mr = new MediaRecorder(dest.stream, { mimeType: mime, audioBitsPerSecond: 192000 });
+  await api.recOpen(mime.startsWith('audio/mp4') ? 'm4a' : 'webm');
+  let chain = Promise.resolve();
+  mr.ondataavailable = e => { if (e.data.size) chain = chain.then(async () => api.recChunk(await e.data.arrayBuffer())); };
+  rec = { kind: 'audio', hasAudio: true, fps: 0, segs: [{ t: 0, speed: 1 }], mr, ds, video: document.createElement('video'), timer: null, ac, micStream, canvas: null, t0: 0, acc: 0, paused: false, tick: null, warn };
+  rec.donePromise = new Promise(res => { mr.onstop = async () => { await chain; res(await api.recFinish(rec.finishOpts)); }; });
+  mr.start(1000);
+  rec.t0 = performance.now(); rec.tick = setInterval(updateTimer, 250);
+  api.recState(true); updateTimer();
+}
+
 function elapsed() { return rec ? rec.acc + (rec.paused ? 0 : performance.now() - rec.t0) : 0; }
 function updateTimer() {
   if (rec && rec.baking) return; // the slot shows render progress now
@@ -235,7 +271,7 @@ async function stopRecording() {
   r.segs.forEach((s, i) => { s.end = i + 1 < r.segs.length ? r.segs[i + 1].t : null; });
   const total = elapsed() / 1000;
   const segments = r.segs.map(s => ({ start: s.t, end: s.end, speed: s.speed })).filter(s => s.end == null || s.end > s.start);
-  r.finishOpts = { segments, hasAudio: r.hasAudio, fps: r.fps, total };
+  r.finishOpts = { segments, hasAudio: r.hasAudio, fps: r.fps, total, kind: r.kind || 'video' };
   if (segments.some(s => s.speed !== 1)) {
     // capture is already off, so the bar may change now. The stop button becomes "cancel render" (keeps the raw file).
     r.baking = true; ['btnPause', 'dot', 'spd'].forEach(id => show(id, false));
@@ -260,25 +296,45 @@ async function teardown() {
 }
 
 // ---------- result ----------
-function showResult(r) {
+// Result panel: shows after a capture, hides itself after 3 s (stays while the pointer is over it) and lives
+// under the "Recent" button; the last 8 captures are kept for the session.
+const recent = []; let ri = 0, hideT = 0;
+function mediaOff() { const v = $('preview').firstChild; if (v && v.pause) { v.pause(); v.removeAttribute('src'); v.load(); } }
+function paint() {
+  const r = recent[ri]; if (!r) return;
   resultFile = r.file; resultKind = r.kind;
   const url = 'file:///' + r.file.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/').replace(/^([A-Za-z])%3A/, '$1:');
-  $('preview').innerHTML = '';
-  const el = document.createElement(r.kind === 'image' ? 'img' : 'video');
-  el.src = url; if (r.kind === 'video') { el.controls = true; el.muted = false; }
+  mediaOff(); $('preview').innerHTML = '';
+  const el = document.createElement(r.kind === 'image' ? 'img' : r.kind === 'audio' ? 'audio' : 'video');
+  el.src = url; if (r.kind !== 'image') { el.controls = true; el.muted = false; if (r.kind === 'audio') el.style.width = '100%'; }
   $('preview').appendChild(el);
-  $('rname').textContent = r.file;
+  $('rname').textContent = (recent.length > 1 ? '(' + (ri + 1) + '/' + recent.length + ') ' : '') + r.file;
   $('rCopy').textContent = r.kind === 'image' ? 'Copy image' : 'Copy path';
-  show('result', true); show('panel', false);
+  show('rPrev', recent.length > 1); show('rNext', recent.length > 1);
 }
+function closeResult() { clearTimeout(hideT); mediaOff(); show('result', false); }
+function openResult(auto) {
+  paint(); show('result', true); show('panel', false);
+  clearTimeout(hideT);
+  if (auto) { const tick = () => { if ($('result').matches(':hover')) hideT = setTimeout(tick, 1000); else closeResult(); }; hideT = setTimeout(tick, 3000); }
+}
+function showResult(r) { recent.unshift(r); if (recent.length > 8) recent.pop(); ri = 0; show('btnRecent', true); openResult(true); }
+$('btnRecent').onclick = () => { if (!$('result').classList.contains('hidden')) closeResult(); else if (recent.length) { toast(''); openResult(false); } };
+$('rPrev').onclick = () => { ri = (ri + 1) % recent.length; paint(); clearTimeout(hideT); };
+$('rNext').onclick = () => { ri = (ri - 1 + recent.length) % recent.length; paint(); clearTimeout(hideT); };
 $('rMove').onclick = async () => {
+  clearTimeout(hideT);
   const d = await api.moveFile(resultFile);
-  if (d) { resultFile = d; $('rname').textContent = 'Moved → ' + d; const v = $('preview').firstChild; if (v && v.pause) v.pause(); }
+  if (d) { recent[ri].file = d; resultFile = d; $('rname').textContent = 'Moved → ' + d; const v = $('preview').firstChild; if (v && v.pause) v.pause(); }
 };
 $('rOpen').onclick = () => api.reveal(resultFile);
 $('rCopy').onclick = () => (resultKind === 'image' ? api.copyImage(resultFile) : api.copyPath(resultFile));
-$('rDel').onclick = () => { const v = $('preview').firstChild; if (v && v.pause) { v.removeAttribute('src'); v.load(); } api.deleteFile(resultFile); show('result', false); };
-$('rDone').onclick = () => { const v = $('preview').firstChild; if (v && v.pause) { v.removeAttribute('src'); v.load(); } show('result', false); };
+$('rDel').onclick = () => {
+  mediaOff(); api.deleteFile(resultFile); recent.splice(ri, 1);
+  if (!recent.length) { closeResult(); show('btnRecent', false); } else { ri = Math.min(ri, recent.length - 1); paint(); }
+};
+$('rDone').onclick = () => closeResult();
+api.onInfo(m => { toast(m); setTimeout(() => { if ($('msg').textContent === m) toast(''); }, 2000); });
 api.onResult(showResult);
 api.onError(m => toast(m));
 api.onUpdate(u => {
